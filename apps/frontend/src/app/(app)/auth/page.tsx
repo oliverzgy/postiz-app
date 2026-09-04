@@ -4,6 +4,7 @@ import { Register } from '@gitroom/frontend/components/auth/register';
 import { Metadata } from 'next';
 import { isGeneralServerSide } from '@gitroom/helpers/utils/is.general.server.side';
 import Link from 'next/link';
+import { cookies } from 'next/headers';
 import { getT } from '@gitroom/react/translation/get.translation.service.backend';
 import { LoginWithOidc } from '@gitroom/frontend/components/auth/login.with.oidc';
 export const metadata: Metadata = {
@@ -13,10 +14,16 @@ export const metadata: Metadata = {
 export default async function Auth(params: {searchParams: Promise<{provider: string}>}) {
   const t = await getT();
   if (process.env.DISABLE_REGISTRATION === 'true') {
+    const cookieStore = await cookies();
+    const hasInvite = !!cookieStore.get('org')?.value;
     const canRegister = (
       await (await internalFetch('/auth/can-register')).json()
     ).register;
-    if (!canRegister && !(await params?.searchParams)?.provider) {
+    if (
+      !canRegister &&
+      !hasInvite &&
+      !(await params?.searchParams)?.provider
+    ) {
       return (
         <>
           <LoginWithOidc />

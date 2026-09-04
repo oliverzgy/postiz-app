@@ -392,6 +392,61 @@ export class OrganizationRepository {
     });
   }
 
+  /**
+   * Invite-only signup: create the user inside the inviting org with the
+   * invited role. Do not create a personal SUPERADMIN workspace.
+   */
+  async createInvitedUserInOrg(
+    body: Omit<CreateOrgUserDto, 'providerToken'> & { providerId?: string },
+    invite: { orgId: string; role: 'USER' | 'ADMIN'; id: string },
+    hasEmail: boolean,
+    ip: string,
+    userAgent: string
+  ) {
+    const org = await this._organization.model.organization.findFirst({
+      where: { id: invite.orgId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!org) {
+      throw new Error('Invitation organization not found');
+    }
+
+    const created = await this._user.model.user.create({
+      data: {
+        activated: body.provider !== 'LOCAL' || !hasEmail,
+        email: body.email,
+        password: body.password
+          ? AuthService.hashPassword(body.password)
+          : '',
+        providerName: body.provider,
+        providerId: body.providerId || '',
+        timezone: 0,
+        ip,
+        agent: userAgent,
+        inviteId: invite.id,
+        organizations: {
+          create: {
+            role: invite.role,
+            organizationId: invite.orgId,
+          },
+        },
+      },
+      select: {
+        id: true,
+        email: true,
+        password: true,
+        providerName: true,
+        activated: true,
+        inviteId: true,
+      },
+    });
+
+    return {
+      id: invite.orgId,
+      users: [{ user: created }],
+    };
+  }
+
   getOrgByCustomerId(customerId: string) {
     return this._organization.model.organization.findFirst({
       where: {

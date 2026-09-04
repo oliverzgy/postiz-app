@@ -21,7 +21,16 @@ export class AuthService {
     private _emailService: EmailService,
     private _providerManager: AuthProviderManager
   ) {}
-  async canRegister(provider: string) {
+  async canRegister(
+    provider: string,
+    invite?: boolean | { orgId: string; role: 'USER' | 'ADMIN'; id: string }
+  ) {
+    // Valid team invite must still be able to create an account when public
+    // registration is disabled (self-host invite-only workflow).
+    if (invite && typeof invite !== 'boolean') {
+      return true;
+    }
+
     if (
       process.env.DISABLE_REGISTRATION !== 'true' ||
       provider === Provider.GENERIC
@@ -52,24 +61,27 @@ export class AuthService {
           throw new Error('Email already exists');
         }
 
-        if (!(await this.canRegister(provider))) {
+        if (!(await this.canRegister(provider, addToOrg))) {
           throw new Error('Registration is disabled');
         }
 
-        const create = await this._organizationService.createOrgAndUser(
-          body,
-          ip,
-          userAgent
-        );
+        const create =
+          addToOrg && typeof addToOrg !== 'boolean'
+            ? await this._organizationService.createInvitedUserInOrg(
+                body,
+                addToOrg,
+                ip,
+                userAgent
+              )
+            : await this._organizationService.createOrgAndUser(
+                body,
+                ip,
+                userAgent
+              );
 
         const addedOrg =
           addToOrg && typeof addToOrg !== 'boolean'
-            ? await this._organizationService.addUserToOrg(
-                create.users[0].user.id,
-                addToOrg.id,
-                addToOrg.orgId,
-                addToOrg.role
-              )
+            ? { organizationId: addToOrg.orgId }
             : false;
 
         const obj = { addedOrg, jwt: await this.jwt(create.users[0].user) };
@@ -97,17 +109,21 @@ export class AuthService {
       provider,
       body as CreateOrgUserDto,
       ip,
-      userAgent
+      userAgent,
+      addToOrg
     );
 
+    // New invited users are already attached inside createInvitedUserInOrg.
     const addedOrg =
       addToOrg && typeof addToOrg !== 'boolean'
-        ? await this._organizationService.addUserToOrg(
-            user.id,
-            addToOrg.id,
-            addToOrg.orgId,
-            addToOrg.role
-          )
+        ? user.inviteId === addToOrg.id
+          ? { organizationId: addToOrg.orgId }
+          : await this._organizationService.addUserToOrg(
+              user.id,
+              addToOrg.id,
+              addToOrg.orgId,
+              addToOrg.role
+            )
         : false;
     return { addedOrg, jwt: await this.jwt(user) };
   }
@@ -138,7 +154,8 @@ export class AuthService {
     provider: Provider,
     body: CreateOrgUserDto,
     ip: string,
-    userAgent: string
+    userAgent: string,
+    addToOrg?: boolean | { orgId: string; role: 'USER' | 'ADMIN'; id: string }
   ) {
     const providerInstance = this._providerManager.getProvider(provider);
     const providerUser = await providerInstance.getUser(body.providerToken);
@@ -155,22 +172,32 @@ export class AuthService {
       return user;
     }
 
-    if (!(await this.canRegister(provider))) {
+    if (!(await this.canRegister(provider, addToOrg))) {
       throw new Error('Registration is disabled');
     }
 
-    const create = await this._organizationService.createOrgAndUser(
-      {
-        company: body.company,
-        email: providerUser.email,
-        password: '',
-        provider,
-        providerId: providerUser.id,
-        datafast_visitor_id: body.datafast_visitor_id,
-      },
-      ip,
-      userAgent
-    );
+    const payload = {
+      company: body.company,
+      email: providerUser.email,
+      password: '',
+      provider,
+      providerId: providerUser.id,
+      datafast_visitor_id: body.datafast_visitor_id,
+    };
+
+    const create =
+      addToOrg && typeof addToOrg !== 'boolean'
+        ? await this._organizationService.createInvitedUserInOrg(
+            payload,
+            addToOrg,
+            ip,
+            userAgent
+          )
+        : await this._organizationService.createOrgAndUser(
+            payload,
+            ip,
+            userAgent
+          );
 
     this._track('register', providerUser.email, body.datafast_visitor_id).catch(
       (err) => {}
