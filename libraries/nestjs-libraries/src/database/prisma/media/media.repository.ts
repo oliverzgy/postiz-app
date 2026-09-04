@@ -27,7 +27,6 @@ export class MediaRepository {
         status: true,
         title: true,
         contentHash: true,
-        createdAt: true,
       },
     });
   }
@@ -61,6 +60,7 @@ export class MediaRepository {
         alt: true,
         status: true,
         contentHash: true,
+        title: true,
       },
     });
   }

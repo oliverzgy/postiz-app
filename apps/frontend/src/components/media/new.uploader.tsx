@@ -200,6 +200,7 @@ export function useUppyUploader(props: {
       fileOrderIndex = 0;
     });
     uppy2.on('upload-error', (_file: any, error: any, response: any) => {
+      // Legacy 409 MEDIA_DUPLICATE path (older servers); new servers return 200 + reused.
       const body = response?.body || error?.response?.body || error?.data;
       if (body?.code === 'MEDIA_DUPLICATE' || body?.existing?.id) {
         const name =
@@ -255,10 +256,24 @@ export function useUppyUploader(props: {
         return orderA - orderB;
       });
 
+      const notifyReused = (media: any) => {
+        if (!media?.reused) {
+          return;
+        }
+        toast.show(
+          t('media_duplicate', 'Already in library: {{name}}', {
+            name: media.originalName || media.title || media.name || 'file',
+          }),
+          'warning'
+        );
+      };
+
       if (storageProvider === 'local') {
         setLocked(false);
         fileOrderIndex = 0;
-        onUploadSuccess(sortedSuccessful.map((p) => p.response.body));
+        const bodies = sortedSuccessful.map((p) => p.response.body);
+        bodies.forEach(notifyReused);
+        onUploadSuccess(bodies);
         return;
       }
 
@@ -288,18 +303,21 @@ export function useUppyUploader(props: {
                 }),
               });
               const file = await response.json();
-              if (
-                !response.ok &&
-                (file?.code === 'MEDIA_DUPLICATE' || file?.existing?.id)
-              ) {
-                toast.show(
-                  t('media_duplicate', 'Already in library: {{name}}', {
-                    name: file.existing?.originalName || originalName || name,
-                  }),
-                  'warning'
-                );
+              if (!response.ok) {
+                if (file?.code === 'MEDIA_DUPLICATE' || file?.existing?.id) {
+                  toast.show(
+                    t('media_duplicate', 'Already in library: {{name}}', {
+                      name:
+                        file.existing?.originalName || originalName || name,
+                    }),
+                    'warning'
+                  );
+                  // Prefer existing media so the batch still attaches it.
+                  return { file: file.existing || null, order };
+                }
                 return { file: null, order };
               }
+              notifyReused(file);
               return { file, order };
             })
           )
@@ -318,7 +336,9 @@ export function useUppyUploader(props: {
 
       setLocked(false);
       fileOrderIndex = 0;
-      onUploadSuccess(sortedSuccessful.map((p) => p.response.body.saved));
+      const saved = sortedSuccessful.map((p) => p.response.body.saved);
+      saved.forEach(notifyReused);
+      onUploadSuccess(saved);
     });
     uppy2.on('upload-success', (file, response) => {
       // @ts-ignore

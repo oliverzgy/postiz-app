@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Prevent the same binary from being registered twice in one organization’s Media Library. Uniqueness is based on **file content**, not filename or upload path.
+Prevent the same binary from being stored twice in one organization’s Media Library. Re-uploading the same bytes **reuses** the existing row instead of failing the upload. Uniqueness is based on **file content**, not filename or upload path.
 
 ## Rule
 
@@ -24,32 +24,15 @@ Migration: `libraries/nestjs-libraries/src/database/prisma/migrations/2026090412
 ## Upload flow
 
 1. Bytes are hashed (`crypto.createHash('sha256')`) in `MediaService.saveFile`.
-2. If an active row with the same hash exists → **HTTP 409** `ConflictException` with:
-
-```json
-{
-  "statusCode": 409,
-  "code": "MEDIA_DUPLICATE",
-  "message": "This media already exists in the library",
-  "existing": {
-    "id": "...",
-    "name": "...",
-    "originalName": "...",
-    "path": "...",
-    "title": "...",
-    "contentHash": "..."
-  }
-}
-```
-
+2. If an active row with the same hash exists → **HTTP 200** with the **existing** media row and `reused: true` (no second insert, upload is not blocked).
 3. Otherwise the row is created with `contentHash` set, then technical analyze may run (reuse the same buffer when available).
-4. Concurrent inserts that race the app check still hit the unique index (`P2002`) and are mapped to the same 409 payload.
+4. Concurrent inserts that race the app check still hit the unique index (`P2002`) and are mapped to the same reuse response.
 
 All save entry points go through `saveFile` (`upload-server`, `upload-simple`, `save-media`, R2 multipart complete, AI video save).
 
 ## UI
 
-- Uploader (`new.uploader.tsx`) surfaces duplicates with a warning toast: **Already in library: …**
+- Uploader (`new.uploader.tsx`) still attaches the media (existing id/path) and shows a warning toast: **Already in library: …**
 - Media settings shows a read-only **Content fingerprint (SHA-256)** when `contentHash` is present.
 
 ## Existing assets (no hash yet)
@@ -57,7 +40,7 @@ All save entry points go through `saveFile` (`upload-server`, `upload-simple`, `
 Rows created before this change may have `contentHash = null`. They are **not** covered by the unique index until hashed.
 
 - Click **Analyze technical metadata** on an item (or any path that calls `analyzeTechnicalMetadata`) to backfill `contentHash`.
-- Until backfilled, a re-upload of the same bytes can still create a second row; after backfill, further duplicates are rejected.
+- Until backfilled, a re-upload of the same bytes can still create a second row; after backfill, further same-byte uploads reuse the existing row (`reused: true`).
 
 Optional ops note: after deploy, batch-analyze important libraries if you need uniqueness to apply to historical files immediately.
 

@@ -1,4 +1,4 @@
-import { ConflictException, HttpException, Injectable } from '@nestjs/common';
+import { HttpException, Injectable } from '@nestjs/common';
 import { MediaRepository } from '@gitroom/nestjs-libraries/database/prisma/media/media.repository';
 import { OpenaiService } from '@gitroom/nestjs-libraries/openai/openai.service';
 import { generationError } from '@gitroom/nestjs-libraries/openai/generation.error';
@@ -77,29 +77,6 @@ export class MediaService {
     return createHash('sha256').update(buffer).digest('hex');
   }
 
-  private duplicateConflict(existing: {
-    id: string;
-    name: string;
-    originalName: string | null;
-    path: string;
-    title?: string | null;
-    contentHash?: string | null;
-  }) {
-    return new ConflictException({
-      statusCode: 409,
-      code: 'MEDIA_DUPLICATE',
-      message: 'This media already exists in the library',
-      existing: {
-        id: existing.id,
-        name: existing.name,
-        originalName: existing.originalName,
-        path: existing.path,
-        title: existing.title ?? null,
-        contentHash: existing.contentHash ?? null,
-      },
-    });
-  }
-
   async saveFile(
     org: string,
     fileName: string,
@@ -113,8 +90,10 @@ export class MediaService {
       org,
       contentHash
     );
+    // Same bytes already in the library: reuse the row so upload still
+    // succeeds (UI / launch flows get a media object) without a second insert.
     if (existing) {
-      throw this.duplicateConflict(existing);
+      return { ...existing, reused: true as const };
     }
 
     try {
@@ -139,7 +118,7 @@ export class MediaService {
           contentHash
         );
         if (raced) {
-          throw this.duplicateConflict(raced);
+          return { ...raced, reused: true as const };
         }
       }
       throw err;
