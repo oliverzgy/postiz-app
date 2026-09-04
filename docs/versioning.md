@@ -62,16 +62,17 @@ echo "${UPSTREAM}+gf.1" > VERSION
 ## Build / deploy
 
 ```bash
-VERSION=$(tr -d '[:space:]' < VERSION)
+VERSION=$(tr -d '[:space:]' < VERSION)          # e.g. 2.23.0+gf.1 (UI / SemVer)
+IMAGE_TAG=${VERSION//+/-}                       # Docker forbids '+': 2.23.0-gf.1
 SHA=$(git rev-parse --short HEAD)
 docker build -f Dockerfile.dev \
   --build-arg "NEXT_PUBLIC_VERSION=${VERSION}" \
-  -t "postiz-gigglefone:${VERSION}" \
+  -t "postiz-gigglefone:${IMAGE_TAG}" \
   -t "postiz-gigglefone:${SHA}" \
   -t postiz-gigglefone:latest .
 ```
 
-Sidebar shows SemVer (e.g. `2.23.0+gf.1`). Compose may pin `postiz-gigglefone:2.23.0+gf.1` or the SHA tag.
+Sidebar shows SemVer (`2.23.0+gf.1`). Compose pins the Docker-safe tag: `postiz-gigglefone:2.23.0-gf.1` (or the SHA).
 
 ## UI
 
