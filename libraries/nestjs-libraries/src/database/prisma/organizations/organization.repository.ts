@@ -431,14 +431,6 @@ export class OrganizationRepository {
           },
         },
       },
-      select: {
-        id: true,
-        email: true,
-        password: true,
-        providerName: true,
-        activated: true,
-        inviteId: true,
-      },
     });
 
     return {
