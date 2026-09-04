@@ -61,15 +61,10 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
   oneTimeToken = true;
 
   isBetweenSteps = false;
-  scopes = [
-    'openid',
-    'profile',
-    'w_member_social',
-    'r_basicprofile',
-    'rw_organization_admin',
-    'w_organization_social',
-    'r_organization_social',
-  ];
+  // Personal profile: Sign In with LinkedIn (OIDC) + Share on LinkedIn only.
+  // Org scopes need Community Management API on a *separate* app (LinkedIn Page).
+  // Asking for unauthorized scopes makes LinkedIn show "Bummer, something went wrong".
+  scopes = ['openid', 'profile', 'w_member_social'];
   override maxConcurrentJob = 2;
   refreshWait = true;
   editor = 'normal' as const;
@@ -146,13 +141,7 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       })
     ).json();
 
-    const { vanityName } = await (
-      await fetch('https://api.linkedin.com/v2/me', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-    ).json();
+    const vanityName = await this.fetchVanityName(accessToken);
 
     const {
       name,
@@ -182,7 +171,7 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
     const codeVerifier = makeId(30);
     const url = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${
       process.env.LINKEDIN_CLIENT_ID
-    }&prompt=none&redirect_uri=${encodeURIComponent(
+    }&prompt=consent&redirect_uri=${encodeURIComponent(
       `${process.env.FRONTEND_URL}/integrations/social/linkedin`
     )}&state=${state}&scope=${encodeURIComponent(this.scopes.join(' '))}`;
     return {
@@ -238,13 +227,7 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       })
     ).json();
 
-    const { vanityName } = await (
-      await fetch('https://api.linkedin.com/v2/me', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-    ).json();
+    const vanityName = await this.fetchVanityName(accessToken);
 
     return {
       id,
@@ -255,6 +238,22 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       picture,
       username: vanityName,
     };
+  }
+
+  /** `/v2/me` needs deprecated `r_basicprofile`; OpenID `sub` is enough as id. */
+  protected async fetchVanityName(accessToken: string) {
+    try {
+      const res = await fetch('https://api.linkedin.com/v2/me', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) {
+        return '';
+      }
+      const body = await res.json();
+      return body.vanityName || '';
+    } catch {
+      return '';
+    }
   }
 
   async company(token: string, data: { url: string }) {
