@@ -199,17 +199,16 @@ cat <<EOF
 
 ==> Sync complete
 
-Next: rebuild & deploy your custom image (pin the tag; do not chase official latest):
+Next: rebuild & deploy (SemVer — see docs/versioning.md):
 
-  # from repo root
-  docker build -f Dockerfile.dev -t ${IMAGE_NAME}:${FEATURE_SHA} .
-  docker tag ${IMAGE_NAME}:${FEATURE_SHA} ${IMAGE_NAME}:latest
+  VERSION=\$(tr -d '[:space:]' < VERSION)
+  docker build -f Dockerfile.dev \\
+    --build-arg NEXT_PUBLIC_VERSION="\$VERSION" \\
+    -t ${IMAGE_NAME}:\$VERSION \\
+    -t ${IMAGE_NAME}:${FEATURE_SHA} \\
+    -t ${IMAGE_NAME}:latest .
 
-  # production example (flow.gigglefone.com)
-  # scp / docker save|load, then on the host:
-  #   cd ~/postiz-docker-compose
-  #   # set image: ${IMAGE_NAME}:${FEATURE_SHA}
-  #   docker compose up -d postiz
+  # production: pin image ${IMAGE_NAME}:\$VERSION (or :${FEATURE_SHA})
 
 Optional:
   $0 --push                 # push updated main + feature to fork

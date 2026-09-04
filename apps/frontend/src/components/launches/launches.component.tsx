@@ -27,6 +27,24 @@ import { useIntegrationList } from '@gitroom/frontend/components/launches/helper
 import useCookie from 'react-use-cookie';
 import { Onboarding } from '@gitroom/frontend/components/onboarding/onboarding';
 
+/**
+ * Sidebar product version — SemVer 2.0 (https://semver.org/).
+ * Accepts optional leading "v". Non-SemVer bake strings are hidden.
+ */
+export const formatBuildVersion = (raw?: string) => {
+  if (!raw) {
+    return '';
+  }
+  const value = raw.trim().replace(/^v/i, '');
+  // MAJOR.MINOR.PATCH with optional prerelease / build metadata
+  if (
+    /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value)
+  ) {
+    return value;
+  }
+  return '';
+};
+
 export const SVGLine = () => {
   return (
     <svg
@@ -585,9 +603,7 @@ export const LaunchesComponent = () => {
                 <div>{capitalize(user?.tier?.current || '')} tier</div>
               )}
               <div>
-                {process.env.NEXT_PUBLIC_VERSION
-                  ? process.env.NEXT_PUBLIC_VERSION
-                  : ''}
+                {formatBuildVersion(process.env.NEXT_PUBLIC_VERSION)}
               </div>
             </div>
           </div>
