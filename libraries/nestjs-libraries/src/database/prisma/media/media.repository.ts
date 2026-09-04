@@ -10,7 +10,35 @@ export class MediaRepository {
     private _tags: PrismaRepository<'tags'>
   ) {}
 
-  saveFile(org: string, fileName: string, filePath: string, originalName?: string) {
+  findActiveByContentHash(org: string, contentHash: string) {
+    return this._media.model.media.findFirst({
+      where: {
+        organizationId: org,
+        contentHash,
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        name: true,
+        originalName: true,
+        path: true,
+        thumbnail: true,
+        alt: true,
+        status: true,
+        title: true,
+        contentHash: true,
+        createdAt: true,
+      },
+    });
+  }
+
+  saveFile(
+    org: string,
+    fileName: string,
+    filePath: string,
+    originalName?: string,
+    contentHash?: string
+  ) {
     return this._media.model.media.create({
       data: {
         organization: {
@@ -22,6 +50,7 @@ export class MediaRepository {
         path: filePath,
         originalName: originalName || null,
         title: originalName || fileName,
+        ...(contentHash ? { contentHash } : {}),
       },
       select: {
         id: true,
@@ -31,6 +60,7 @@ export class MediaRepository {
         thumbnail: true,
         alt: true,
         status: true,
+        contentHash: true,
       },
     });
   }
@@ -144,6 +174,7 @@ export class MediaRepository {
         people: true, products: true, keywords: true, focusX: true, focusY: true,
         recommendedPlatforms: true, languages: true, source: true, sourceUrl: true,
         attribution: true, copyrightOwner: true, licenseType: true, licenseUrl: true, expiresAt: true,
+        contentHash: true,
         createdAt: true, category: true, tags: { include: { tag: true } },
       },
       skip: pageNum * 18,

@@ -44,6 +44,7 @@ export function useUppyUploader(props: {
 }) {
   const setLocked = useLaunchStore((state) => state.setLocked);
   const toast = useToaster();
+  const t = useT();
   const { storageProvider, backendUrl, disableImageCompression, transloadit } =
     useVariables();
   const { onUploadSuccess, allowedFileTypes } = props;
@@ -198,6 +199,24 @@ export function useUppyUploader(props: {
       props.onEnd();
       fileOrderIndex = 0;
     });
+    uppy2.on('upload-error', (_file: any, error: any, response: any) => {
+      const body = response?.body || error?.response?.body || error?.data;
+      if (body?.code === 'MEDIA_DUPLICATE' || body?.existing?.id) {
+        const name =
+          body.existing?.originalName ||
+          body.existing?.title ||
+          body.existing?.name ||
+          'file';
+        toast.show(
+          t('media_duplicate', 'Already in library: {{name}}', { name }),
+          'warning'
+        );
+        return;
+      }
+      if (error?.message) {
+        toast.show(error.message, 'warning');
+      }
+    });
     uppy2.on('upload-start', () => {
       props.onStart();
     });
@@ -205,6 +224,27 @@ export function useUppyUploader(props: {
       console.log(result);
       for (const file of [...result.successful]) {
         uppy2.removeFile(file.id);
+      }
+
+      if (result.failed?.length) {
+        for (const failed of result.failed) {
+          const body =
+            // @ts-ignore
+            failed.response?.body ||
+            // @ts-ignore
+            failed.error?.response?.body;
+          if (body?.code === 'MEDIA_DUPLICATE' || body?.existing?.id) {
+            const name =
+              body.existing?.originalName ||
+              body.existing?.title ||
+              body.existing?.name ||
+              failed.name;
+            toast.show(
+              t('media_duplicate', 'Already in library: {{name}}', { name }),
+              'warning'
+            );
+          }
+        }
       }
 
       props.onEnd();
@@ -239,20 +279,32 @@ export function useUppyUploader(props: {
 
         const loadAllMedia = (
           await Promise.all(
-            toSave.map(async ({ name, originalName, order }) => ({
-              file: await (
-                await fetch('/media/save-media', {
-                  method: 'POST',
-                  body: JSON.stringify({
-                    name,
-                    originalName,
+            toSave.map(async ({ name, originalName, order }) => {
+              const response = await fetch('/media/save-media', {
+                method: 'POST',
+                body: JSON.stringify({
+                  name,
+                  originalName,
+                }),
+              });
+              const file = await response.json();
+              if (
+                !response.ok &&
+                (file?.code === 'MEDIA_DUPLICATE' || file?.existing?.id)
+              ) {
+                toast.show(
+                  t('media_duplicate', 'Already in library: {{name}}', {
+                    name: file.existing?.originalName || originalName || name,
                   }),
-                })
-              ).json(),
-              order,
-            }))
+                  'warning'
+                );
+                return { file: null, order };
+              }
+              return { file, order };
+            })
           )
         )
+          .filter((p) => p.file)
           .sort((a, b) => {
             return a.order - b.order;
           })

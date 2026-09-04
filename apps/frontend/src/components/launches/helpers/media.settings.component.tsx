@@ -639,6 +639,11 @@ export const MediaComponentInner: FC<{
         <Field label="License URL"><input value={licenseUrl} onChange={(e) => setLicenseUrl(e.target.value)} className="field" /></Field>
         <Field label="Expires at"><input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} className="field" /></Field>
       </section>
+      {media?.contentHash ? (
+        <div className="text-xs text-gray-400 break-all">
+          Content fingerprint (SHA-256): {media.contentHash}
+        </div>
+      ) : null}
       <div className="flex gap-2"><button type="button" disabled={loading} onClick={reanalyze} className="px-4 py-2 rounded bg-third">Analyze technical metadata</button><button type="button" disabled={loading} onClick={analyze} className="px-4 py-2 rounded bg-third">AI suggestions</button></div>
       {hasExtension(media?.path, 'mp4') && (
         <>

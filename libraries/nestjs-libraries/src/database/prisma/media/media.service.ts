@@ -1,9 +1,9 @@
-import { HttpException, Injectable } from '@nestjs/common';
+import { ConflictException, HttpException, Injectable } from '@nestjs/common';
 import { MediaRepository } from '@gitroom/nestjs-libraries/database/prisma/media/media.repository';
 import { OpenaiService } from '@gitroom/nestjs-libraries/openai/openai.service';
 import { generationError } from '@gitroom/nestjs-libraries/openai/generation.error';
 import { SubscriptionService } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/subscription.service';
-import { Organization } from '@prisma/client';
+import { Organization, Prisma } from '@prisma/client';
 import { SaveMediaInformationDto } from '@gitroom/nestjs-libraries/dtos/media/save.media.information.dto';
 import { VideoManager } from '@gitroom/nestjs-libraries/videos/video.manager';
 import { VideoDto } from '@gitroom/nestjs-libraries/dtos/videos/video.dto';
@@ -19,6 +19,7 @@ import { organizationId } from '@gitroom/nestjs-libraries/temporal/temporal.sear
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import { readOrFetch } from '@gitroom/helpers/utils/read.or.fetch';
 import sharp from 'sharp';
+import { createHash } from 'crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -71,10 +72,77 @@ export class MediaService {
     }
   }
 
-  async saveFile(org: string, fileName: string, filePath: string, originalName?: string) {
-    const media = await this._mediaRepository.saveFile(org, fileName, filePath, originalName);
-    void this.analyzeTechnicalMetadata(org, media.id).catch(() => undefined);
-    return media;
+  private hashContent(buffer: Buffer) {
+    return createHash('sha256').update(buffer).digest('hex');
+  }
+
+  private duplicateConflict(existing: {
+    id: string;
+    name: string;
+    originalName: string | null;
+    path: string;
+    title?: string | null;
+    contentHash?: string | null;
+  }) {
+    return new ConflictException({
+      statusCode: 409,
+      code: 'MEDIA_DUPLICATE',
+      message: 'This media already exists in the library',
+      existing: {
+        id: existing.id,
+        name: existing.name,
+        originalName: existing.originalName,
+        path: existing.path,
+        title: existing.title ?? null,
+        contentHash: existing.contentHash ?? null,
+      },
+    });
+  }
+
+  async saveFile(
+    org: string,
+    fileName: string,
+    filePath: string,
+    originalName?: string,
+    knownBuffer?: Buffer
+  ) {
+    const buffer = knownBuffer ?? (await this.loadMediaBuffer(filePath));
+    const contentHash = this.hashContent(buffer);
+    const existing = await this._mediaRepository.findActiveByContentHash(
+      org,
+      contentHash
+    );
+    if (existing) {
+      throw this.duplicateConflict(existing);
+    }
+
+    try {
+      const media = await this._mediaRepository.saveFile(
+        org,
+        fileName,
+        filePath,
+        originalName,
+        contentHash
+      );
+      void this.analyzeTechnicalMetadata(org, media.id, buffer).catch(
+        () => undefined
+      );
+      return media;
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        const raced = await this._mediaRepository.findActiveByContentHash(
+          org,
+          contentHash
+        );
+        if (raced) {
+          throw this.duplicateConflict(raced);
+        }
+      }
+      throw err;
+    }
   }
 
   getMedia(org: string, page: number, search?: string, filters?: Record<string, string | string[] | undefined>) {
@@ -115,13 +183,19 @@ export class MediaService {
     return Buffer.from(await readOrFetch(url));
   }
 
-  async analyzeTechnicalMetadata(org: string, id: string) {
+  async analyzeTechnicalMetadata(org: string, id: string, knownBuffer?: Buffer) {
     const media = await this._mediaRepository.getMediaById(id, org);
     if (!media) throw new HttpException('Media not found', 404);
-    const buffer = await this.loadMediaBuffer(media.path);
+    const buffer = knownBuffer ?? (await this.loadMediaBuffer(media.path));
+    const contentHash = media.contentHash || this.hashContent(buffer);
     const extension = (media.originalName || media.name).split('.').pop()?.toLowerCase();
     const isVideo = ['mp4', 'mov', 'webm', 'mkv'].includes(extension || '');
-    const base = { fileSize: buffer.length, type: isVideo ? 'video' : 'image', mimeType: isVideo ? `video/${extension === 'mov' ? 'quicktime' : extension || 'mp4'}` : undefined };
+    const base = {
+      fileSize: buffer.length,
+      type: isVideo ? 'video' : 'image',
+      mimeType: isVideo ? `video/${extension === 'mov' ? 'quicktime' : extension || 'mp4'}` : undefined,
+      contentHash,
+    };
     if (!isVideo) {
       const image = sharp(buffer);
       const [metadata, stats] = await Promise.all([image.metadata(), image.stats()]);

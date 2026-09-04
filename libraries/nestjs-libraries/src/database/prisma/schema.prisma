@@ -275,6 +275,7 @@ model Media {
   licenseUrl         String?
   expiresAt          DateTime?
   categoryId         String?
+  contentHash        String?
   category           MediaCategory? @relation(fields: [categoryId], references: [id])
   tags               TagsMedia[]
   organization       Organization        @relation(fields: [organizationId], references: [id])
@@ -287,6 +288,7 @@ model Media {
   @@index([type])
   @@index([organizationId, status])
   @@index([organizationId, expiresAt])
+  @@index([organizationId, contentHash])
   @@index([categoryId])
 }
 
