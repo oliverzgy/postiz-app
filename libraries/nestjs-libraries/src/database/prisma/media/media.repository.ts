@@ -85,7 +85,30 @@ export class MediaRepository {
   }
 
   async saveMediaInformation(org: string, data: SaveMediaInformationDto) {
-    const { tagIds, categoryId, expiresAt, ...fields } = data;
+    // Explicit allowlist only — never spread the request body into Prisma
+    // (mass-assignment of columns like `path` enables SSRF via analyze/AI).
+    const { tagIds, categoryId, expiresAt } = data;
+    const fields = {
+      alt: data.alt,
+      thumbnail: data.thumbnail,
+      thumbnailTimestamp: data.thumbnailTimestamp,
+      title: data.title,
+      description: data.description,
+      people: data.people,
+      products: data.products,
+      keywords: data.keywords,
+      status: data.status,
+      focusX: data.focusX,
+      focusY: data.focusY,
+      recommendedPlatforms: data.recommendedPlatforms,
+      languages: data.languages,
+      source: data.source,
+      sourceUrl: data.sourceUrl,
+      attribution: data.attribution,
+      copyrightOwner: data.copyrightOwner,
+      licenseType: data.licenseType,
+      licenseUrl: data.licenseUrl,
+    };
     if (categoryId) {
       const category = await this._categories.model.mediaCategory.findFirst({ where: { id: categoryId, orgId: org, deletedAt: null } });
       if (!category) throw new BadRequestException('Media category is not available');

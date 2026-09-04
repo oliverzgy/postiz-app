@@ -17,12 +17,13 @@ import { TemporalService } from 'nestjs-temporal-core';
 import { TypedSearchAttributes } from '@temporalio/common';
 import { organizationId } from '@gitroom/nestjs-libraries/temporal/temporal.search.attribute';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
-import { readOrFetch } from '@gitroom/helpers/utils/read.or.fetch';
+import { isSafePublicHttpsUrl } from '@gitroom/nestjs-libraries/dtos/webhooks/webhook.url.validator';
+import { ssrfSafeDispatcher } from '@gitroom/nestjs-libraries/dtos/webhooks/ssrf.safe.dispatcher';
 import sharp from 'sharp';
 import { createHash } from 'crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, normalize } from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -159,28 +160,34 @@ export class MediaService {
   deleteCategory(org: string, id: string) { return this._mediaRepository.deleteCategory(org, id); }
 
   private async loadMediaBuffer(path: string) {
-    // Uploaded files are often stored as absolute public URLs like
-    // http://127.0.0.1:4007/uploads/... which are unreachable from inside
-    // the container on the published host port. Prefer the local disk path.
+    // Prefer the known-safe /uploads/ disk prefix (local store URLs often look
+    // like http://127.0.0.1:4007/uploads/... and are unreachable from inside
+    // the container). Never read arbitrary absolute filesystem paths.
     const uploadsIndex = path.indexOf('/uploads/');
     if (uploadsIndex >= 0) {
-      try {
-        return await readFile(path.slice(uploadsIndex));
-      } catch {
-        // Fall through to HTTP fetch for remote/object-storage paths.
-      }
-    }
-    if (path.startsWith('/') && !path.startsWith('//')) {
-      try {
-        return await readFile(path);
-      } catch {
-        // Fall through.
+      const localPath = normalize(path.slice(uploadsIndex));
+      if (localPath === '/uploads' || localPath.startsWith('/uploads/')) {
+        try {
+          return await readFile(localPath);
+        } catch {
+          // Fall through to HTTP fetch for remote/object-storage paths.
+        }
       }
     }
     const url = path.startsWith('http')
       ? path
       : `${process.env.MAIN_URL || 'http://127.0.0.1:5000'}${path}`;
-    return Buffer.from(await readOrFetch(url));
+    if (!(await isSafePublicHttpsUrl(url))) {
+      throw new Error('Unsafe media URL');
+    }
+    const response = await fetch(url, {
+      // @ts-ignore — undici option, not in lib.dom fetch types
+      dispatcher: ssrfSafeDispatcher,
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch media (${response.status})`);
+    }
+    return Buffer.from(await response.arrayBuffer());
   }
 
   async analyzeTechnicalMetadata(org: string, id: string, knownBuffer?: Buffer) {
