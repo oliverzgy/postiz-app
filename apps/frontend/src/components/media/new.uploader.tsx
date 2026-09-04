@@ -200,18 +200,9 @@ export function useUppyUploader(props: {
       fileOrderIndex = 0;
     });
     uppy2.on('upload-error', (_file: any, error: any, response: any) => {
-      // Legacy 409 MEDIA_DUPLICATE path (older servers); new servers return 200 + reused.
       const body = response?.body || error?.response?.body || error?.data;
+      // Duplicate is handled in `complete` (reuse existing media); skip noisy errors.
       if (body?.code === 'MEDIA_DUPLICATE' || body?.existing?.id) {
-        const name =
-          body.existing?.originalName ||
-          body.existing?.title ||
-          body.existing?.name ||
-          'file';
-        toast.show(
-          t('media_duplicate', 'Already in library: {{name}}', { name }),
-          'warning'
-        );
         return;
       }
       if (error?.message) {
@@ -227,39 +218,25 @@ export function useUppyUploader(props: {
         uppy2.removeFile(file.id);
       }
 
-      if (result.failed?.length) {
-        for (const failed of result.failed) {
-          const body =
-            // @ts-ignore
-            failed.response?.body ||
-            // @ts-ignore
-            failed.error?.response?.body;
-          if (body?.code === 'MEDIA_DUPLICATE' || body?.existing?.id) {
-            const name =
-              body.existing?.originalName ||
-              body.existing?.title ||
-              body.existing?.name ||
-              failed.name;
-            toast.show(
-              t('media_duplicate', 'Already in library: {{name}}', { name }),
-              'warning'
-            );
-          }
-        }
-      }
+      const orderOf = (file: any) => +((file?.meta as any)?.addedOrder ?? 0);
 
-      props.onEnd();
-      // Sort results by original add order to maintain file sequence
-      const sortedSuccessful = [...result.successful].sort((a, b) => {
-        const orderA = +((a.meta as any)?.addedOrder ?? 0);
-        const orderB = +((b.meta as any)?.addedOrder ?? 0);
-        return orderA - orderB;
-      });
-
-      const notifyReused = (media: any) => {
-        if (!media?.reused) {
-          return;
+      /** Normalize Uppy/XHR/Nest payloads into a Media row with id. */
+      const extractMedia = (payload: any): any | null => {
+        if (!payload || typeof payload !== 'object') {
+          return null;
         }
+        const body =
+          payload.body && typeof payload.body === 'object'
+            ? payload.body
+            : payload;
+        const media = body?.saved || body?.existing || body;
+        if (media?.id && (media.path || media.name)) {
+          return media;
+        }
+        return null;
+      };
+
+      const notifyAlreadyInLibrary = (media: any) => {
         toast.show(
           t('media_duplicate', 'Already in library: {{name}}', {
             name: media.originalName || media.title || media.name || 'file',
@@ -268,12 +245,45 @@ export function useUppyUploader(props: {
         );
       };
 
+      props.onEnd();
+
       if (storageProvider === 'local') {
+        const fromSuccess = [...result.successful]
+          .sort((a, b) => orderOf(a) - orderOf(b))
+          .map((file) => {
+            const media = extractMedia(file.response) || extractMedia(file.response?.body);
+            if (media?.reused) {
+              notifyAlreadyInLibrary(media);
+            }
+            return media;
+          })
+          .filter(Boolean);
+
+        // Prod may still return HTTP 409 MEDIA_DUPLICATE — recover existing row.
+        const fromDuplicate = (result.failed || [])
+          .map((file: any) => {
+            const body =
+              file.response?.body ||
+              file.error?.response?.body ||
+              file.error?.data;
+            if (!(body?.code === 'MEDIA_DUPLICATE' || body?.existing?.id)) {
+              return null;
+            }
+            const media = extractMedia(body);
+            if (media) {
+              notifyAlreadyInLibrary(media);
+            }
+            return media
+              ? { media, order: orderOf(file) }
+              : null;
+          })
+          .filter(Boolean)
+          .sort((a: any, b: any) => a.order - b.order)
+          .map((entry: any) => entry.media);
+
         setLocked(false);
         fileOrderIndex = 0;
-        const bodies = sortedSuccessful.map((p) => p.response.body);
-        bodies.forEach(notifyReused);
-        onUploadSuccess(bodies);
+        onUploadSuccess([...fromSuccess, ...fromDuplicate]);
         return;
       }
 
@@ -305,24 +315,23 @@ export function useUppyUploader(props: {
               const file = await response.json();
               if (!response.ok) {
                 if (file?.code === 'MEDIA_DUPLICATE' || file?.existing?.id) {
-                  toast.show(
-                    t('media_duplicate', 'Already in library: {{name}}', {
-                      name:
-                        file.existing?.originalName || originalName || name,
-                    }),
-                    'warning'
-                  );
-                  // Prefer existing media so the batch still attaches it.
-                  return { file: file.existing || null, order };
+                  const media = extractMedia(file);
+                  if (media) {
+                    notifyAlreadyInLibrary(media);
+                  }
+                  return { file: media, order };
                 }
                 return { file: null, order };
               }
-              notifyReused(file);
-              return { file, order };
+              const media = extractMedia(file);
+              if (media?.reused) {
+                notifyAlreadyInLibrary(media);
+              }
+              return { file: media, order };
             })
           )
         )
-          .filter((p) => p.file)
+          .filter((p) => p.file?.id)
           .sort((a, b) => {
             return a.order - b.order;
           })
@@ -334,19 +343,55 @@ export function useUppyUploader(props: {
         return;
       }
 
+      const fromSuccess = [...result.successful]
+        .sort((a, b) => orderOf(a) - orderOf(b))
+        .map((file) => {
+          const media =
+            extractMedia(file.response?.body?.saved) ||
+            extractMedia(file.response);
+          if (media?.reused) {
+            notifyAlreadyInLibrary(media);
+          }
+          return media;
+        })
+        .filter(Boolean);
+
+      const fromDuplicate = (result.failed || [])
+        .map((file: any) => {
+          const body =
+            file.response?.body ||
+            file.error?.response?.body ||
+            file.error?.data;
+          if (!(body?.code === 'MEDIA_DUPLICATE' || body?.existing?.id)) {
+            return null;
+          }
+          const media = extractMedia(body);
+          if (media) {
+            notifyAlreadyInLibrary(media);
+          }
+          return media ? { media, order: orderOf(file) } : null;
+        })
+        .filter(Boolean)
+        .sort((a: any, b: any) => a.order - b.order)
+        .map((entry: any) => entry.media);
+
       setLocked(false);
       fileOrderIndex = 0;
-      const saved = sortedSuccessful.map((p) => p.response.body.saved);
-      saved.forEach(notifyReused);
-      onUploadSuccess(saved);
+      onUploadSuccess([...fromSuccess, ...fromDuplicate]);
     });
     uppy2.on('upload-success', (file, response) => {
+      if (!file?.id) {
+        return;
+      }
+      const current = uppy2.getState().files[file.id];
+      if (!current) {
+        return;
+      }
       // @ts-ignore
       uppy2.setFileState(file.id, {
+        progress: current.progress,
         // @ts-ignore
-        progress: uppy2.getState().files[file.id].progress,
-        // @ts-ignore
-        uploadURL: response.body.Location,
+        uploadURL: response?.body?.Location,
         response: response,
         isPaused: false,
       });

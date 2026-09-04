@@ -567,7 +567,12 @@ export const Editor: FC<{
 
   const uppy = useUppyUploader({
     onUploadSuccess: (result: any) => {
-      appendImages(result);
+      const valid = (Array.isArray(result) ? result : []).filter(
+        (item: any) => item?.id
+      );
+      if (valid.length) {
+        appendImages(valid);
+      }
       uppy.clear();
     },
     allowedFileTypes: 'image/*,video/mp4',

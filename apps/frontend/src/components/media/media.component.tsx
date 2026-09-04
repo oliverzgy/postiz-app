@@ -262,8 +262,14 @@ export const MediaBox: FC<{
       if (standalone) {
         return;
       }
+      const valid = (Array.isArray(arr) ? arr : []).filter(
+        (item: any) => item?.id
+      );
+      if (!valid.length) {
+        return;
+      }
       setSelected((prevSelected) => {
-        return [...prevSelected, ...arr];
+        return [...prevSelected, ...valid];
       });
     },
     onStart: () => setLoading(true),
@@ -275,9 +281,9 @@ export const MediaBox: FC<{
       if (standalone) {
         return;
       }
-      const exists = selected.find((p: any) => p.id === media.id);
+      const exists = selected.find((p: any) => p?.id === media?.id);
       if (exists) {
-        setSelected(selected.filter((f: any) => f.id !== media.id));
+        setSelected(selected.filter((f: any) => f?.id !== media?.id));
         return;
       }
       setSelected([...selected, media]);
