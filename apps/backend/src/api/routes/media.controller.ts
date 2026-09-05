@@ -153,6 +153,19 @@ export class MediaController {
     );
   }
 
+  // Must be registered before POST /:endpoint or "categories" is treated as an R2 upload key.
+  @Get('/categories/list')
+  categories(@GetOrgFromRequest() org: Organization) { return this._mediaService.getCategories(org.id); }
+
+  @Post('/categories')
+  createCategory(@GetOrgFromRequest() org: Organization, @Body('name') name: string, @Body('color') color?: string) { return this._mediaService.createCategory(org.id, name, color); }
+
+  @Post('/categories/:id')
+  updateCategory(@GetOrgFromRequest() org: Organization, @Param('id') id: string, @Body('name') name: string, @Body('color') color?: string) { return this._mediaService.updateCategory(org.id, id, name, color); }
+
+  @Delete('/categories/:id')
+  deleteCategory(@GetOrgFromRequest() org: Organization, @Param('id') id: string) { return this._mediaService.deleteCategory(org.id, id); }
+
   @Post('/:endpoint')
   async uploadFile(
     @GetOrgFromRequest() org: Organization,
@@ -198,18 +211,6 @@ export class MediaController {
 
   @Post('/:id/ai-suggestions')
   suggestMedia(@GetOrgFromRequest() org: Organization, @Param('id') id: string) { return this._mediaService.suggestMetadata(org.id, id); }
-
-  @Get('/categories/list')
-  categories(@GetOrgFromRequest() org: Organization) { return this._mediaService.getCategories(org.id); }
-
-  @Post('/categories')
-  createCategory(@GetOrgFromRequest() org: Organization, @Body('name') name: string, @Body('color') color?: string) { return this._mediaService.createCategory(org.id, name, color); }
-
-  @Post('/categories/:id')
-  updateCategory(@GetOrgFromRequest() org: Organization, @Param('id') id: string, @Body('name') name: string, @Body('color') color?: string) { return this._mediaService.updateCategory(org.id, id, name, color); }
-
-  @Delete('/categories/:id')
-  deleteCategory(@GetOrgFromRequest() org: Organization, @Param('id') id: string) { return this._mediaService.deleteCategory(org.id, id); }
 
   @Get('/video-options')
   getVideos() {

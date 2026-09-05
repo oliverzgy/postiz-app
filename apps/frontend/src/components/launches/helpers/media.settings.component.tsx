@@ -409,9 +409,11 @@ export const MediaComponentInner: FC<{
   }, [media?.id]);
 
   const [showCategoryManager, setShowCategoryManager] = useState(false);
+  const [categoryManagerMode, setCategoryManagerMode] = useState<'create' | 'edit'>('create');
   const [categoryDraftName, setCategoryDraftName] = useState('');
   const [categoryDraftColor, setCategoryDraftColor] = useState('#612BD3');
   const [categoryBusy, setCategoryBusy] = useState(false);
+  const [categoryError, setCategoryError] = useState('');
 
   const refreshCategories = useCallback(async () => {
     await mutateCategories();
@@ -421,6 +423,8 @@ export const MediaComponentInner: FC<{
   const openCreateCategory = useCallback(() => {
     setCategoryDraftName('');
     setCategoryDraftColor('#612BD3');
+    setCategoryError('');
+    setCategoryManagerMode('create');
     setShowCategoryManager(true);
   }, []);
 
@@ -432,26 +436,36 @@ export const MediaComponentInner: FC<{
     }
     setCategoryDraftName(current.name || '');
     setCategoryDraftColor(current.color || '#612BD3');
+    setCategoryError('');
+    setCategoryManagerMode('edit');
     setShowCategoryManager(true);
   }, [categories, categoryId, openCreateCategory]);
 
   const createCategory = useCallback(async () => {
     if (!categoryDraftName.trim() || categoryBusy) return;
     setCategoryBusy(true);
+    setCategoryError('');
     try {
-      const created = await (
-        await newFetch('/media/categories', {
-          method: 'POST',
-          body: JSON.stringify({
-            name: categoryDraftName.trim(),
-            color: categoryDraftColor,
-          }),
-        })
-      ).json();
+      const response = await newFetch('/media/categories', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: categoryDraftName.trim(),
+          color: categoryDraftColor,
+        }),
+      });
+      const created = await response.json().catch(() => ({}));
+      if (!response.ok || !created?.id) {
+        setCategoryError(
+          created?.message || created?.error || 'Could not create category'
+        );
+        return;
+      }
       await refreshCategories();
       setCategoryId(created.id);
       setShowCategoryManager(false);
       setCategoryDraftName('');
+    } catch {
+      setCategoryError('Could not create category');
     } finally {
       setCategoryBusy(false);
     }
@@ -533,7 +547,7 @@ export const MediaComponentInner: FC<{
               {showCategoryManager && (
                 <div className="rounded-[8px] border border-tableBorder bg-newBgColorInner p-3 flex flex-col gap-2">
                   <div className="text-[13px] font-[600]">
-                    {categoryId ? 'Edit category' : 'Create category'}
+                    {categoryManagerMode === 'edit' ? 'Edit category' : 'Create category'}
                   </div>
                   <input
                     autoFocus
@@ -551,16 +565,20 @@ export const MediaComponentInner: FC<{
                       className="h-[36px] w-[48px] rounded border border-tableBorder bg-transparent"
                     />
                   </div>
+                  {categoryError ? (
+                    <p className="text-[12px] text-red-500">{categoryError}</p>
+                  ) : null}
                   <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      disabled={categoryBusy || !categoryDraftName.trim()}
-                      onClick={createCategory}
-                      className="px-3 py-2 rounded bg-[#612BD3] text-white disabled:opacity-50"
-                    >
-                      Create new
-                    </button>
-                    {categoryId ? (
+                    {categoryManagerMode === 'create' ? (
+                      <button
+                        type="button"
+                        disabled={categoryBusy || !categoryDraftName.trim()}
+                        onClick={createCategory}
+                        className="px-3 py-2 rounded bg-[#612BD3] text-white disabled:opacity-50"
+                      >
+                        Create new
+                      </button>
+                    ) : (
                       <>
                         <button
                           type="button"
@@ -579,7 +597,7 @@ export const MediaComponentInner: FC<{
                           Archive
                         </button>
                       </>
-                    ) : null}
+                    )}
                     <button
                       type="button"
                       disabled={categoryBusy}
@@ -762,4 +780,27 @@ export const MediaComponentInner: FC<{
   );
 };
 
-const Field: FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => <label className="flex flex-col gap-1 text-sm text-textColor"><span>{label}</span>{children}<style jsx>{`.field { width: 100%; padding: 0.5rem 0.75rem; background: var(--newBgColorInner, #171717); border: 1px solid var(--tableBorder, #444); border-radius: .5rem; color: inherit; }`}</style></label>;
+const Field: FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <label className="flex flex-col gap-1 text-sm text-textColor">
+    <span>{label}</span>
+    {children}
+    <style jsx>{`
+      label :global(.field) {
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        background: #fff;
+        border: 1px solid var(--tableBorder, #444);
+        border-radius: 0.5rem;
+        color: #111;
+        color-scheme: light;
+      }
+      label :global(.field::placeholder) {
+        color: #6b7280;
+      }
+      label :global(.field option) {
+        color: #111;
+        background: #fff;
+      }
+    `}</style>
+  </label>
+);

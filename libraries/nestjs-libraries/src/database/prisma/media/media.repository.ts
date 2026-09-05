@@ -211,7 +211,27 @@ export class MediaRepository {
   }
 
   getCategories(org: string) { return this._categories.model.mediaCategory.findMany({ where: { orgId: org, deletedAt: null }, orderBy: { name: 'asc' } }); }
-  createCategory(org: string, name: string, color?: string) { return this._categories.model.mediaCategory.create({ data: { orgId: org, name: name.trim(), color: color || '#612BD3' } }); }
+  async createCategory(org: string, name: string, color?: string) {
+    const trimmed = (name || '').trim();
+    if (!trimmed) {
+      throw new BadRequestException('Category name is required');
+    }
+    const existing = await this._categories.model.mediaCategory.findFirst({
+      where: { orgId: org, name: trimmed },
+    });
+    if (existing) {
+      if (!existing.deletedAt) {
+        return existing;
+      }
+      return this._categories.model.mediaCategory.update({
+        where: { id: existing.id },
+        data: { deletedAt: null, color: color || existing.color },
+      });
+    }
+    return this._categories.model.mediaCategory.create({
+      data: { orgId: org, name: trimmed, color: color || '#612BD3' },
+    });
+  }
   async updateCategory(org: string, id: string, name: string, color?: string) {
     const existing = await this._categories.model.mediaCategory.findFirst({ where: { id, orgId: org, deletedAt: null } });
     if (!existing) throw new NotFoundException('Media category not found');
