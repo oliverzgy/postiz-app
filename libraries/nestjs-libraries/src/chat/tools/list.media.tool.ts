@@ -115,7 +115,7 @@ Use this before updateMediaMetadataTool to find the media id and see current tit
           .string()
           .optional()
           .describe(
-            'Search title, originalName, description, alt, source, attribution, copyrightOwner'
+            'Search title, originalName, description, alt, source, attribution, copyrightOwner, people, products, keywords, and tag names'
           ),
         status: z
           .enum(['draft', 'ready', 'archived'])

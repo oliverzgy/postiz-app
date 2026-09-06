@@ -475,7 +475,7 @@ export const MediaBox: FC<{
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder={t('search_media_by_name', 'Search by file name')}
+              placeholder={t('search_media_metadata', 'Search metadata')}
               className="w-full h-[44px] px-[14px] rounded-[8px] bg-newBgColorInner border border-newColColor text-[14px] outline-none focus:border-[#612BD3]"
             />
           </div>

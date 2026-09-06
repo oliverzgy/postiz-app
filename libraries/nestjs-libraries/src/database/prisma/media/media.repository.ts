@@ -1,4 +1,8 @@
-import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
+import { Prisma } from '@prisma/client';
+import {
+  PrismaRepository,
+  PrismaService,
+} from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { SaveMediaInformationDto } from '@gitroom/nestjs-libraries/dtos/media/save.media.information.dto';
 
@@ -136,9 +140,7 @@ export class MediaRepository {
     const pageNum = (page || 1) - 1;
     const trimmedSearch = search?.trim();
     const searchFilter = trimmedSearch
-      ? {
-          OR: ['originalName', 'title', 'description', 'alt', 'source', 'attribution', 'copyrightOwner'].map((field) => ({ [field]: { contains: trimmedSearch, mode: 'insensitive' as const } })),
-        }
+      ? await this.mediaSearchFilter(org, trimmedSearch)
       : {};
     const tagIds = typeof filters.tagIds === 'string' ? filters.tagIds.split(',').filter(Boolean) : filters.tagIds;
     const list = (value: string | string[] | undefined) => typeof value === 'string' ? value.split(',').filter(Boolean) : value;
@@ -208,6 +210,56 @@ export class MediaRepository {
       pages,
       results,
     };
+  }
+
+  private async mediaSearchFilter(org: string, trimmedSearch: string) {
+    const textFields = [
+      'originalName',
+      'title',
+      'description',
+      'alt',
+      'source',
+      'attribution',
+      'copyrightOwner',
+    ] as const;
+    const or: Record<string, unknown>[] = [
+      ...textFields.map((field) => ({
+        [field]: { contains: trimmedSearch, mode: 'insensitive' as const },
+      })),
+      {
+        tags: {
+          some: {
+            tag: {
+              name: { contains: trimmedSearch, mode: 'insensitive' as const },
+            },
+          },
+        },
+      },
+      { people: { has: trimmedSearch } },
+      { products: { has: trimmedSearch } },
+      { keywords: { has: trimmedSearch } },
+    ];
+
+    try {
+      const prisma = this._media.model as unknown as PrismaService;
+      const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT id FROM "Media"
+        WHERE "organizationId" = ${org}
+          AND "deletedAt" IS NULL
+          AND (
+            EXISTS (SELECT 1 FROM unnest(people) e WHERE position(lower(${trimmedSearch}) in lower(e)) > 0)
+            OR EXISTS (SELECT 1 FROM unnest(products) e WHERE position(lower(${trimmedSearch}) in lower(e)) > 0)
+            OR EXISTS (SELECT 1 FROM unnest(keywords) e WHERE position(lower(${trimmedSearch}) in lower(e)) > 0)
+          )
+      `);
+      if (rows.length) {
+        or.push({ id: { in: rows.map((row) => row.id) } });
+      }
+    } catch {
+      // Non-Postgres (or array unnest unavailable): exact `has` matches still apply.
+    }
+
+    return { OR: or };
   }
 
   getCategories(org: string) { return this._categories.model.mediaCategory.findMany({ where: { orgId: org, deletedAt: null }, orderBy: { name: 'asc' } }); }
