@@ -1027,9 +1027,13 @@ export class PostsService {
     return loaded;
   }
 
-  private parsePostImages(image: string | null) {
+  private parsePostImages(
+    image: string | null
+  ): Array<{ id?: string; path: string }> {
     try {
-      return JSON.parse(image || '[]');
+      return (
+        JSON.parse(image || '[]') as Array<{ id?: string; path?: string }>
+      ).filter((item): item is { id?: string; path: string } => !!item?.path);
     } catch (err) {
       return [];
     }
@@ -1202,8 +1206,8 @@ export class PostsService {
 
     const mapAttachments = (
       paths: string[] | undefined,
-      existing: Array<{ id?: string; path?: string }>
-    ) =>
+      existing: Array<{ id?: string; path: string }>
+    ): Array<{ id?: string; path: string }> =>
       (paths || []).map((path, index) => {
         const current = existing[index];
         if (current?.path === path && current.id) {
@@ -1216,7 +1220,7 @@ export class PostsService {
       id: string;
       content: string;
       delay: number;
-      image: Array<{ id?: string; path?: string }>;
+      image: Array<{ id?: string; path: string }>;
     }>;
 
     if (patch.postsAndComments) {
