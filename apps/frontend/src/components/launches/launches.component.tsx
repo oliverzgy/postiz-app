@@ -312,8 +312,10 @@ export const MenuComponent: FC<
       data-tooltip-id="tooltip"
       data-tooltip-content={channelTooltip}
       className={clsx(
-        'flex gap-[12px] items-center hover:bg-boxHover group/profile transition-all rounded-e-[8px] cursor-pointer',
-        isSelected ? 'bg-boxFocused' : 'bg-newBgColorInner'
+        'flex gap-[12px] items-center group/profile transition-all rounded-e-[8px] cursor-pointer',
+        isSelected
+          ? 'bg-boxFocused text-textItemFocused hover:bg-boxFocused'
+          : 'bg-newBgColorInner hover:bg-boxHover'
       )}
     >
       <div
