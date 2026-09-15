@@ -453,6 +453,19 @@ export class PostsRepository {
     return update;
   }
 
+  changeGroupState(orgId: string, group: string, state: State) {
+    return this._post.model.post.updateMany({
+      where: {
+        organizationId: orgId,
+        group,
+        deletedAt: null,
+      },
+      data: {
+        state,
+      },
+    });
+  }
+
   getErrorsByPostIds(postIds: string[]) {
     return this._errors.model.errors.findMany({
       where: {

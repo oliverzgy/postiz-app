@@ -23,7 +23,8 @@ export class PostSettingsTool implements AgentToolInterface {
         },
       },
       description: `
-Update the provider settings of an existing post (scheduled or draft) that was NOT published yet.
+Update the provider settings of a DRAFT post only. Scheduled (QUEUE) or failed (ERROR) posts must first be reset with resetPostToDraftTool.
+Published posts and already-due scheduled posts are rejected.
 Only the settings change - the content and the publish date stay exactly as they are.
 Find the post first (list your posts) and pass its "id" here.
 The settings are merged into the existing ones, so only pass the keys you want to change; anything you don't pass stays as it is.

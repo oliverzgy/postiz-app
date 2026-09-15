@@ -39,7 +39,9 @@ List the organization's posts scheduled to be published between two dates (the s
 Returns every post in the window whatever its state (scheduled, draft, published, errored).
 "startDate" and "endDate" are required (UTC) - to list all upcoming posts, pass a wide window (for example from now to a year ahead).
 Each item has an "id", its publish date, state, content, channel and current provider settings.
-Posts cannot be deleted through the Postiz tools - if the user wants to delete a post, tell them to do it themselves in the Postiz app; never offer to delete a post.
+QUEUE or ERROR posts must be reset to DRAFT with resetPostToDraftTool before updatePostTool, postSettingsTool, or deletePostTool will accept them.
+Already-DRAFT posts can be edited or deleted directly.
+Published posts and already-due QUEUE posts cannot be reset, modified, or deleted through MCP.
 `,
       inputSchema: z.object({
         startDate: z

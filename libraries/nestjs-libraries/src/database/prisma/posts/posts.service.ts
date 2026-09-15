@@ -969,20 +969,8 @@ export class PostsService {
     return postList;
   }
 
-  // Update ONLY the provider settings of a not-yet-published post (scheduled or
-  // draft). The passed keys are merged into the existing settings; content and
-  // publish date stay as they are, so the running publish workflow is left
-  // untouched (type "update"). Shared by the agent/MCP tool and the public API
-  // PUT /posts/:id/settings so both go through one path.
-  async updatePostSettings(
-    orgId: string,
-    postId: string,
-    settings: Record<string, any>,
-    creationMethod: CreationMethod
-  ): Promise<{ postId: string; publishDate: string }> {
-    // Ordered as post -> comments, root includes integration and tags.
+  private async loadRootPost(orgId: string, postId: string) {
     const ordered = await this.getPostsRecursively(postId, true, orgId, true);
-
     const [root] = ordered;
     if (!root) {
       throw new NotFoundException('Post not found');
@@ -994,57 +982,78 @@ export class PostsService {
       );
     }
 
-    if (root.state !== 'QUEUE' && root.state !== 'DRAFT') {
+    return { root, ordered };
+  }
+
+  private assertMcpCanTouchUnpublished(root: PostWithConditionals) {
+    switch (root.state) {
+      case 'DRAFT':
+      case 'ERROR':
+        return;
+      case 'QUEUE':
+        if (dayjs.utc(root.publishDate).isBefore(dayjs.utc())) {
+          throw new BadRequestException(
+            'This scheduled post is already due and cannot be reset, modified, or deleted'
+          );
+        }
+        return;
+      case 'PUBLISHED':
+        throw new BadRequestException(
+          'Published posts cannot be reset, modified, or deleted'
+        );
+      default: {
+        const unexpected: never = root.state;
+        throw new BadRequestException(`Unsupported post state ${unexpected}`);
+      }
+    }
+  }
+
+  // QUEUE / ERROR / DRAFT may be reset to draft. Published and due QUEUE cannot.
+  private async requireUnpublishedRoot(orgId: string, postId: string) {
+    const loaded = await this.loadRootPost(orgId, postId);
+    this.assertMcpCanTouchUnpublished(loaded.root);
+    return loaded;
+  }
+
+  // Content edits and deletes require DRAFT. Scheduled / failed posts must be
+  // reset to draft first so the publish workflow is cancelled.
+  private async requireDraftRoot(orgId: string, postId: string) {
+    const loaded = await this.requireUnpublishedRoot(orgId, postId);
+    if (loaded.root.state !== 'DRAFT') {
       throw new BadRequestException(
-        'Only scheduled posts that were not published yet (or drafts) can be updated'
+        `This post is ${loaded.root.state}. Reset it to draft with resetPostToDraftTool before modifying or deleting it`
       );
     }
+    return loaded;
+  }
 
-    if (
-      root.state === 'QUEUE' &&
-      dayjs.utc(root.publishDate).isBefore(dayjs.utc())
-    ) {
-      throw new BadRequestException(
-        'The publish time of this post already passed, it cannot be updated'
-      );
-    }
-
-    const integration = (root as any).integration;
-
-    let existingSettings: Record<string, any>;
+  private parsePostImages(image: string | null) {
     try {
-      existingSettings = JSON.parse(root.settings || '{}');
+      return JSON.parse(image || '[]');
     } catch (err) {
-      existingSettings = {};
+      return [];
     }
+  }
 
-    // Merge: only the passed keys change, everything else stays.
-    const mergedSettings = {
-      ...existingSettings,
-      ...(settings || {}),
-      __type: integration.providerIdentifier,
-    };
+  private parsePostSettings(settings: string | null) {
+    try {
+      return JSON.parse(settings || '{}');
+    } catch (err) {
+      return {};
+    }
+  }
 
-    // Keep the existing content/ids so the posts are updated in place (the
-    // workflow identity is preserved) - only the settings differ.
-    const value = ordered.map((p) => {
-      let image = [];
-      try {
-        image = JSON.parse(p.image || '[]');
-      } catch (err) {}
-      return {
-        id: p.id,
-        content: p.content,
-        delay: p.delay || 0,
-        image,
-      };
-    });
-
-    // Same server-side validation as the dashboard / public create route.
+  private async assertUnpublishedContentValid(
+    orgId: string,
+    root: PostWithConditionals,
+    integration: Integration,
+    settings: Record<string, any>,
+    value: Array<{ content?: string; image?: Array<{ path: string }> }>
+  ) {
     const [validation] = await this.validatePosts(orgId, [
       {
         integration: { id: integration.id },
-        settings: mergedSettings,
+        settings,
         value: value.map((p) => ({ content: p.content, image: p.image })),
       },
     ]);
@@ -1055,27 +1064,67 @@ export class PostsService {
       );
     }
 
-    if (root.state !== 'DRAFT') {
-      if (!validation.valid) {
-        throw new BadRequestException(
-          `${validation.name}: ${
-            validation.settingsError || 'Please fix your settings'
-          }`
-        );
-      }
-
-      if (validation.errors !== true) {
-        throw new BadRequestException(
-          `${validation.name}: ${validation.errors}`
-        );
-      }
-
-      if (validation.tooLong) {
-        throw new BadRequestException(
-          `${validation.name}: The maximum characters is ${validation.maximumCharacters}`
-        );
-      }
+    if (root.state === 'DRAFT') {
+      return;
     }
+
+    if (!validation.valid) {
+      throw new BadRequestException(
+        `${validation.name}: ${
+          validation.settingsError || 'Please fix your settings'
+        }`
+      );
+    }
+
+    if (validation.errors !== true) {
+      throw new BadRequestException(
+        `${validation.name}: ${validation.errors}`
+      );
+    }
+
+    if (validation.tooLong) {
+      throw new BadRequestException(
+        `${validation.name}: The maximum characters is ${validation.maximumCharacters}`
+      );
+    }
+  }
+
+  // Update ONLY the provider settings of a not-yet-published post (scheduled,
+  // draft, or failed). The passed keys are merged into the existing settings;
+  // content and publish date stay as they are, so the running publish workflow
+  // is left untouched (type "update"). Shared by the agent/MCP tool and the
+  // public API PUT /posts/:id/settings so both go through one path.
+  async updatePostSettings(
+    orgId: string,
+    postId: string,
+    settings: Record<string, any>,
+    creationMethod: CreationMethod
+  ): Promise<{ postId: string; publishDate: string }> {
+    const { root, ordered } = await this.requireDraftRoot(orgId, postId);
+    const integration = (root as any).integration;
+
+    const mergedSettings = {
+      ...this.parsePostSettings(root.settings),
+      ...(settings || {}),
+      __type: integration.providerIdentifier,
+    };
+
+    // Keep the existing content/ids so the posts are updated in place (the
+    // workflow identity is preserved) - only the settings differ.
+    const value = ordered.map((p) => ({
+      id: p.id,
+      content: p.content,
+      delay: p.delay || 0,
+      image: this.parsePostImages(p.image),
+    }));
+
+    await this.assertUnpublishedContentValid(
+      orgId,
+      root,
+      integration,
+      mergedSettings,
+      value
+    );
 
     const date = dayjs.utc(root.publishDate).format('YYYY-MM-DDTHH:mm:ss');
 
@@ -1113,6 +1162,184 @@ export class PostsService {
     return {
       postId: output.postId,
       publishDate: date,
+    };
+  }
+
+  async updateUnpublishedPost(
+    orgId: string,
+    postId: string,
+    patch: {
+      date?: string;
+      content?: string;
+      attachments?: string[];
+      postsAndComments?: Array<{ content: string; attachments?: string[] }>;
+      settings?: Record<string, any>;
+    },
+    creationMethod: CreationMethod
+  ): Promise<{ postId: string; publishDate: string; state: State }> {
+    const hasContent =
+      patch.content !== undefined ||
+      patch.attachments !== undefined ||
+      !!patch.postsAndComments;
+    const hasDate = !!patch.date;
+    const hasSettings =
+      !!patch.settings && Object.keys(patch.settings).length > 0;
+
+    if (!hasContent && !hasDate && !hasSettings) {
+      throw new BadRequestException(
+        'Pass at least one of: content, attachments, postsAndComments, date, settings'
+      );
+    }
+
+    const { root, ordered } = await this.requireDraftRoot(orgId, postId);
+    const integration = (root as any).integration as Integration;
+
+    const mergedSettings = {
+      ...this.parsePostSettings(root.settings),
+      ...(patch.settings || {}),
+      __type: integration.providerIdentifier,
+    };
+
+    const mapAttachments = (
+      paths: string[] | undefined,
+      existing: Array<{ id?: string; path?: string }>
+    ) =>
+      (paths || []).map((path, index) => {
+        const current = existing[index];
+        if (current?.path === path && current.id) {
+          return current;
+        }
+        return { id: makeId(10), path };
+      });
+
+    let value: Array<{
+      id: string;
+      content: string;
+      delay: number;
+      image: Array<{ id?: string; path?: string }>;
+    }>;
+
+    if (patch.postsAndComments) {
+      value = patch.postsAndComments.map((item, index) => {
+        const current = ordered[index];
+        const existingImages = current
+          ? this.parsePostImages(current.image)
+          : [];
+        return {
+          id: current?.id || makeId(10),
+          content: item.content,
+          delay: current?.delay || 0,
+          image:
+            item.attachments !== undefined
+              ? mapAttachments(item.attachments, existingImages)
+              : existingImages,
+        };
+      });
+    } else {
+      value = ordered.map((p, index) => {
+        const images = this.parsePostImages(p.image);
+        if (index !== 0) {
+          return {
+            id: p.id,
+            content: p.content,
+            delay: p.delay || 0,
+            image: images,
+          };
+        }
+        return {
+          id: p.id,
+          content: patch.content !== undefined ? patch.content : p.content,
+          delay: p.delay || 0,
+          image:
+            patch.attachments !== undefined
+              ? mapAttachments(patch.attachments, images)
+              : images,
+        };
+      });
+    }
+
+    await this.assertUnpublishedContentValid(
+      orgId,
+      root,
+      integration,
+      mergedSettings,
+      value
+    );
+
+    const date = dayjs
+      .utc(patch.date || root.publishDate)
+      .format('YYYY-MM-DDTHH:mm:ss');
+
+    const [output] = await this.createPost(
+      orgId,
+      {
+        date,
+        type: 'update',
+        shortLink: false,
+        tags: ((root as any).tags || []).map((t: any) => ({
+          value: t.tag.name,
+          label: t.tag.name,
+        })),
+        posts: [
+          {
+            integration,
+            group: root.group,
+            settings: mergedSettings,
+            value,
+          },
+        ],
+      } as any,
+      creationMethod,
+      true
+    );
+
+    if (!output) {
+      throw new BadRequestException('Failed to update the post');
+    }
+
+    return {
+      postId: output.postId,
+      publishDate: date,
+      state: root.state,
+    };
+  }
+
+  async resetUnpublishedPostToDraft(orgId: string, postId: string) {
+    const { root } = await this.requireUnpublishedRoot(orgId, postId);
+
+    if (root.state === 'DRAFT') {
+      return {
+        postId: root.id,
+        state: 'DRAFT' as const,
+        alreadyDraft: true,
+      };
+    }
+
+    await this._postRepository.changeGroupState(orgId, root.group, 'DRAFT');
+
+    try {
+      await this.startWorkflow(
+        root.integration!.providerIdentifier.split('-')[0].toLowerCase(),
+        root.id,
+        orgId,
+        'DRAFT'
+      );
+    } catch (err) {}
+
+    return {
+      postId: root.id,
+      state: 'DRAFT' as const,
+      alreadyDraft: false,
+    };
+  }
+
+  async deleteUnpublishedPost(orgId: string, postId: string) {
+    const { root } = await this.requireDraftRoot(orgId, postId);
+    await this.deletePost(orgId, root.group);
+    return {
+      deleted: true,
+      postId: root.id,
+      group: root.group,
     };
   }
 

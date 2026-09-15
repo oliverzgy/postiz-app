@@ -11,6 +11,9 @@ import { GroupListTool } from '@gitroom/nestjs-libraries/chat/tools/group.list.t
 import { UploadFromUrlTool } from '@gitroom/nestjs-libraries/chat/tools/upload.from.url.tool';
 import { PostsListTool } from '@gitroom/nestjs-libraries/chat/tools/posts.list.tool';
 import { PostSettingsTool } from '@gitroom/nestjs-libraries/chat/tools/post.settings.tool';
+import { ResetPostToDraftTool } from '@gitroom/nestjs-libraries/chat/tools/reset.post.to.draft.tool';
+import { UpdatePostTool } from '@gitroom/nestjs-libraries/chat/tools/update.post.tool';
+import { DeletePostTool } from '@gitroom/nestjs-libraries/chat/tools/delete.post.tool';
 import { ListMediaTool } from '@gitroom/nestjs-libraries/chat/tools/list.media.tool';
 import { ListMediaCategoriesTool } from '@gitroom/nestjs-libraries/chat/tools/list.media.categories.tool';
 import { UpdateMediaMetadataTool } from '@gitroom/nestjs-libraries/chat/tools/update.media.metadata.tool';
@@ -24,6 +27,9 @@ export const toolList = [
   IntegrationSchedulePostTool,
   PostsListTool,
   PostSettingsTool,
+  ResetPostToDraftTool,
+  UpdatePostTool,
+  DeletePostTool,
   ListMediaTool,
   ListMediaCategoriesTool,
   UpdateMediaMetadataTool,
