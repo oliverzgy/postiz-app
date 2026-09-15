@@ -1,10 +1,10 @@
 'use client';
 
 import { AddProviderButton } from '@gitroom/frontend/components/launches/add.provider.component';
-import { FC, useCallback, useEffect, useMemo, useState } from 'react';
+import { FC, MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import SafeImage from '@gitroom/react/helpers/safe.image';
 import { capitalize, groupBy, orderBy } from 'lodash';
-import { CalendarWeekProvider } from '@gitroom/frontend/components/launches/calendar.context';
+import { CalendarWeekProvider, useCalendar } from '@gitroom/frontend/components/launches/calendar.context';
 import { Filters } from '@gitroom/frontend/components/launches/filters';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
@@ -253,33 +253,67 @@ export const MenuComponent: FC<
   } = props;
   const user = useUser();
   const t = useT();
-  const [collected, drag, dragPreview] = useDrag(() => ({
+  const { selectedChannelId, setSelectedChannelId } = useCalendar();
+  const isSelected = selectedChannelId === integration.id;
+  const didDragRef = useRef(false);
+  const [, drag, dragPreview] = useDrag(() => ({
     type: 'menu',
     item: {
       id: integration.id,
     },
+    end: () => {
+      didDragRef.current = true;
+      setTimeout(() => {
+        didDragRef.current = false;
+      }, 0);
+    },
   }));
+  const selectChannel = useCallback(
+    (event: MouseEvent) => {
+      if (integration.refreshNeeded) {
+        return;
+      }
+      if (didDragRef.current) {
+        didDragRef.current = false;
+        event.preventDefault();
+        return;
+      }
+      setSelectedChannelId(isSelected ? null : integration.id);
+    },
+    [
+      integration.id,
+      integration.refreshNeeded,
+      isSelected,
+      setSelectedChannelId,
+    ]
+  );
+  const channelTooltip = integration.refreshNeeded
+    ? t(
+        'channel_disconnected_click_to_reconnect',
+        'Channel disconnected, click to reconnect.'
+      )
+    : isSelected
+    ? t(
+        'channel_filter_selected',
+        'Showing this channel — click again to show all'
+      )
+    : collapsed
+    ? integration.name
+    : t('channel_filter_hint', 'Click to show only this channel');
   return (
     <div
       // @ts-ignore
       ref={dragPreview}
-      {...(integration.refreshNeeded && {
-        onClick: refreshChannel(integration),
-        'data-tooltip-id': 'tooltip',
-        'data-tooltip-content': t(
-          'channel_disconnected_click_to_reconnect',
-          'Channel disconnected, click to reconnect.'
-        ),
-      })}
-      {...(collapsed
-        ? {
-            'data-tooltip-id': 'tooltip',
-            'data-tooltip-content': integration.name,
-          }
-        : {})}
+      onClick={
+        integration.refreshNeeded
+          ? refreshChannel(integration)
+          : selectChannel
+      }
+      data-tooltip-id="tooltip"
+      data-tooltip-content={channelTooltip}
       className={clsx(
-        'flex gap-[12px] items-center bg-newBgColorInner hover:bg-boxHover group/profile transition-all rounded-e-[8px]',
-        integration.refreshNeeded && 'cursor-pointer'
+        'flex gap-[12px] items-center hover:bg-boxHover group/profile transition-all rounded-e-[8px] cursor-pointer',
+        isSelected ? 'bg-boxFocused' : 'bg-newBgColorInner'
       )}
     >
       <div
@@ -288,17 +322,27 @@ export const MenuComponent: FC<
           integration.disabled && 'opacity-50'
         )}
       >
-        <div className="h-full w-[4px] -ms-[12px] rounded-s-[3px] opacity-0 group-hover/profile:opacity-100 transition-opacity">
+        <div
+          className={clsx(
+            'h-full w-[4px] -ms-[12px] rounded-s-[3px] transition-opacity',
+            isSelected
+              ? 'opacity-100'
+              : 'opacity-0 group-hover/profile:opacity-100'
+          )}
+        >
           <SVGLine />
         </div>
         {(integration.inBetweenSteps || integration.refreshNeeded) && (
           <div
             className="absolute start-0 top-0 w-[39px] h-[46px] cursor-pointer"
-            onClick={
-              integration.refreshNeeded
-                ? refreshChannel(integration)
-                : continueIntegration(integration)
-            }
+            onClick={(event) => {
+              event.stopPropagation();
+              if (integration.refreshNeeded) {
+                refreshChannel(integration)();
+                return;
+              }
+              continueIntegration(integration)();
+            }}
           >
             <div className="bg-red-500 w-[15px] h-[15px] rounded-full start-[5px] top-[5px] absolute z-[200] text-[10px] flex justify-center items-center">
               !
@@ -351,19 +395,24 @@ export const MenuComponent: FC<
       >
         {integration.name}
       </div>
-      <Menu
-        canChangeProfilePicture={integration.changeProfilePicture}
-        canChangeNickName={integration.changeNickName}
-        refreshChannel={refreshChannel}
-        mutate={mutate}
-        onChange={update}
-        id={integration.id}
-        canEnable={
-          user?.totalChannels! > totalNonDisabledChannels &&
-          integration.disabled
-        }
-        canDisable={!integration.disabled}
-      />
+      <div
+        onClick={(event) => event.stopPropagation()}
+        className="flex items-center"
+      >
+        <Menu
+          canChangeProfilePicture={integration.changeProfilePicture}
+          canChangeNickName={integration.changeNickName}
+          refreshChannel={refreshChannel}
+          mutate={mutate}
+          onChange={update}
+          id={integration.id}
+          canEnable={
+            user?.totalChannels! > totalNonDisabledChannels &&
+            integration.disabled
+          }
+          canDisable={!integration.disabled}
+        />
+      </div>
     </div>
   );
 };

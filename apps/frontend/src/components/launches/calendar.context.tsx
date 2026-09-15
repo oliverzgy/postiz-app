@@ -84,7 +84,18 @@ export const CalendarContext = createContext({
   setListState: (state: ListStateFilter) => {
     /** empty **/
   },
+  selectedChannelId: null as string | null,
+  setSelectedChannelId: (_id: string | null) => {
+    /** empty **/
+  },
 });
+
+function postBelongsToChannel(
+  post: { integrationId?: string; integration?: { id?: string } },
+  channelId: string
+) {
+  return (post.integration?.id || post.integrationId) === channelId;
+}
 
 export interface Integrations {
   name: string;
@@ -146,7 +157,9 @@ export const CalendarWeekProvider: FC<{
   const [trendings] = useState<string[]>([]);
   const searchParams = useSearchParams();
   const [displaySaved, setDisplaySaved] = useCookie('calendar-display', 'week');
+  const [channelCookie, setChannelCookie] = useCookie('calendar-channel', '');
   const display = searchParams.get('display') || displaySaved;
+  const selectedChannelId = channelCookie || null;
 
   // List view state
   const [listPage, setListPage] = useState(0);
@@ -155,6 +168,10 @@ export const CalendarWeekProvider: FC<{
     setListStateRaw(next);
     setListPage(0);
   }, []);
+  const setSelectedChannelId = useCallback((id: string | null) => {
+    setChannelCookie(id || '');
+    setListPage(0);
+  }, [setChannelCookie]);
 
   // Initialize with current date range based on URL params or defaults
   const initStartDate = searchParams.get('startDate');
@@ -202,8 +219,9 @@ export const CalendarWeekProvider: FC<{
       limit: '100',
       customer: filters?.customer?.toString() || '',
       state: listState,
+      integration: selectedChannelId || '',
     }).toString();
-  }, [listPage, filters.customer, listState]);
+  }, [listPage, filters.customer, listState, selectedChannelId]);
 
   const loadListData = useCallback(async () => {
     const response = await fetch(`/posts/list?${listParams}`);
@@ -298,7 +316,15 @@ export const CalendarWeekProvider: FC<{
   const comments = useMemo(() => calendarData?.comments || [], [calendarData?.comments]);
 
   // List view data
-  const listPosts = useMemo(() => listData?.posts || [], [listData?.posts]);
+  const listPosts = useMemo(() => {
+    const all = listData?.posts || [];
+    if (!selectedChannelId) {
+      return all;
+    }
+    return all.filter((post: { integrationId?: string; integration?: { id?: string } }) =>
+      postBelongsToChannel(post, selectedChannelId)
+    );
+  }, [listData?.posts, selectedChannelId]);
   const listTotal = listData?.total || 0;
   const listTotalPages = Math.ceil(listTotal / 100);
 
@@ -325,6 +351,30 @@ export const CalendarWeekProvider: FC<{
     }
   }, [posts]);
 
+  useEffect(() => {
+    if (!selectedChannelId) {
+      return;
+    }
+    const match = integrations.find((item) => item.id === selectedChannelId);
+    if (!match) {
+      setSelectedChannelId(null);
+      return;
+    }
+    if (filters.customer && match.customer?.id !== filters.customer) {
+      setSelectedChannelId(null);
+    }
+  }, [integrations, selectedChannelId, filters.customer, setSelectedChannelId]);
+
+  const visiblePosts = useMemo(() => {
+    const all = calendarIsLoading ? [] : internalData;
+    if (!selectedChannelId) {
+      return all;
+    }
+    return all.filter((post: { integrationId?: string; integration?: { id?: string } }) =>
+      postBelongsToChannel(post, selectedChannelId)
+    );
+  }, [calendarIsLoading, internalData, selectedChannelId]);
+
   // Combined reload function that handles both calendar and list views
   const reloadCalendarView = useCallback(() => {
     mutateCalendar();
@@ -340,7 +390,7 @@ export const CalendarWeekProvider: FC<{
         trendings,
         reloadCalendarView,
         ...filters,
-        posts: calendarIsLoading ? [] : internalData,
+        posts: visiblePosts,
         loading,
         integrations,
         setFilters: setFiltersWrapper,
@@ -355,6 +405,8 @@ export const CalendarWeekProvider: FC<{
         setListPage,
         listState,
         setListState,
+        selectedChannelId,
+        setSelectedChannelId,
       }}
     >
       {children}

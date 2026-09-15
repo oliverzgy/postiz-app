@@ -257,7 +257,7 @@ const usePostActions = (onMutate?: () => void) => {
 
 export const DayView = () => {
   const calendar = useCalendar();
-  const { integrations, posts, startDate } = calendar;
+  const { integrations, posts, startDate, selectedChannelId } = calendar;
 
   // Set dayjs locale based on current language
   const currentLanguage = i18next.resolvedLanguage || 'en';
@@ -265,23 +265,41 @@ export const DayView = () => {
 
   const currentDay = dayjs.utc(startDate);
 
+  const scopedIntegrations = useMemo(
+    () =>
+      selectedChannelId
+        ? integrations.filter((item) => item.id === selectedChannelId)
+        : integrations,
+    [integrations, selectedChannelId]
+  );
+
   const options = useMemo(() => {
-    const createdPosts = posts.map((post) => ({
-      integration: [integrations.find((i) => i.id === post.integration.id)!],
-      image: post?.integration?.picture || '',
-      identifier: post?.integration?.providerIdentifier || '',
-      id: post?.integration?.id || '',
-      name: post?.integration?.name || '',
-      time: dayjs
-        .utc(post.publishDate)
-        .diff(dayjs.utc(post.publishDate).startOf('day'), 'minute'),
-    }));
+    const createdPosts = posts.flatMap((post) => {
+      const integration = scopedIntegrations.find(
+        (item) => item.id === post.integration?.id
+      );
+      if (!integration) {
+        return [];
+      }
+      return [
+        {
+          integration: [integration],
+          image: post?.integration?.picture || '',
+          identifier: post?.integration?.providerIdentifier || '',
+          id: post?.integration?.id || '',
+          name: post?.integration?.name || '',
+          time: dayjs
+            .utc(post.publishDate)
+            .diff(dayjs.utc(post.publishDate).startOf('day'), 'minute'),
+        },
+      ];
+    });
     return sortBy(
       Object.values(
         groupBy(
           [
             ...createdPosts,
-            ...integrations.flatMap((p) =>
+            ...scopedIntegrations.flatMap((p) =>
               p.time.flatMap((t) => ({
                 integration: p,
                 identifier: p?.identifier,
@@ -297,7 +315,7 @@ export const DayView = () => {
       ),
       (p) => p[0].time
     );
-  }, [integrations, posts]);
+  }, [scopedIntegrations, posts]);
 
   return (
     <div className="flex flex-col gap-[10px] flex-1 relative">

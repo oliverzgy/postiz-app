@@ -431,6 +431,25 @@ export const Filters = () => {
         onChange={(customer: string) => setCustomer(customer)}
         integrations={calendar.integrations}
       />
+      {calendar.selectedChannelId && (
+        <button
+          type="button"
+          onClick={() => calendar.setSelectedChannelId(null)}
+          className="h-[42px] max-w-[180px] px-[10px] rounded-[8px] border border-newTableBorder bg-boxFocused text-textItemFocused text-[14px] flex items-center gap-[6px]"
+          data-tooltip-id="tooltip"
+          data-tooltip-content={t(
+            'channel_filter_clear',
+            'Show all channels'
+          )}
+        >
+          <span className="truncate">
+            {calendar.integrations.find(
+              (item) => item.id === calendar.selectedChannelId
+            )?.name || t('channel', 'Channel')}
+          </span>
+          <span aria-hidden="true">×</span>
+        </button>
+      )}
       {!isListView && (
         <div className="flex flex-row p-[4px] border border-newTableBorder rounded-[8px] text-[14px] font-[500]">
           <div

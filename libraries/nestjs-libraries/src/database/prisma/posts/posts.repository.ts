@@ -161,6 +161,7 @@ export class PostsRepository {
           deletedAt: null,
           organizationId: orgId,
           ...(query.customer ? { customerId: query.customer } : {}),
+          ...(query.integration ? { id: query.integration } : {}),
         },
         deletedAt: null,
         parentPostId: null,
@@ -265,6 +266,11 @@ export class PostsRepository {
         ...(query.customer
           ? {
               customerId: query.customer,
+            }
+          : {}),
+        ...(query.integration
+          ? {
+              id: query.integration,
             }
           : {}),
       },
