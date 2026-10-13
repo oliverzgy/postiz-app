@@ -1,11 +1,19 @@
 import { INestApplication } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { MastraService } from '@gitroom/nestjs-libraries/chat/mastra.service';
+import { LoadToolsService } from '@gitroom/nestjs-libraries/chat/load.tools.service';
 import { MCPServer } from '@mastra/mcp';
 import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
-import { OAuthService } from '@gitroom/nestjs-libraries/database/prisma/oauth/oauth.service';
+import {
+  OAuthService,
+  selfHostedRelayEnabled,
+} from '@gitroom/nestjs-libraries/database/prisma/oauth/oauth.service';
 import { runWithContext } from './async.storage';
 import { createOAuthMiddleware } from './oauth-middleware';
+import { UPLOAD_WIDGET_URI, uploadWidgetHtml } from '@gitroom/nestjs-libraries/chat/ui/upload.widget';
+import { CLIPPING_WIDGET_URI, clippingWidgetHtml } from '@gitroom/nestjs-libraries/chat/ui/clipping.widget';
+import { UploadFactory } from '@gitroom/nestjs-libraries/upload/upload.factory';
+import { McpRelayService } from '@gitroom/nestjs-libraries/chat/mcp.relay.service';
 const fixAcceptHeader = (req: Request) => {
   const value = 'application/json, text/event-stream';
   req.headers.accept = value;
@@ -29,6 +37,8 @@ export const startMcp = async (app: INestApplication) => {
   const mastraService = app.get(MastraService, { strict: false });
   const organizationService = app.get(OrganizationService, { strict: false });
   const oauthService = app.get(OAuthService, { strict: false });
+  const loadToolsService = app.get(LoadToolsService, { strict: false });
+  const mcpRelayService = app.get(McpRelayService, { strict: false });
 
   const resolveAuth = async (token: string) => {
     if (token.startsWith('pos_')) {
@@ -39,9 +49,18 @@ export const startMcp = async (app: INestApplication) => {
     return organizationService.getOrgByApiKey(token);
   };
 
+  // psh_ tokens: a self-hosted Postiz this server relays to (McpRelayService)
+  const resolveSelfHosted = (token: string) =>
+    oauthService.getSelfHostedByAccessToken(token);
+
   const mastra = await mastraService.mastra();
   const agent = mastra.getAgent('postiz');
-  const tools = await agent.listTools();
+  const agentTools = await agent.listTools();
+  const tools = {
+    ...agentTools,
+    // tools that only make sense inside an MCP host (ui:// widgets)
+    ...(await loadToolsService.loadTools(true)),
+  };
 
   // The Claude connector directory does not accept AI media generation tools,
   // so the directory-facing endpoint hides them. Direct connections
@@ -52,16 +71,66 @@ export const startMcp = async (app: INestApplication) => {
     'videoStatusTool',
     'generateVideoOptions',
     'videoFunctionTool',
+    // clipping renders new videos (AI picked cuts, burned-in captions)
+    'clippingTool',
+    'clippingStatusTool',
+    'clippingWidgetTicketTool',
   ];
-  const claudeTools = Object.fromEntries(
-    Object.entries(tools).filter(([name]) => !claudeHiddenTools.includes(name))
-  ) as typeof tools;
+  const withoutClaudeHidden = <T extends Record<string, unknown>>(source: T) =>
+    Object.fromEntries(
+      Object.entries(source).filter(([name]) => !claudeHiddenTools.includes(name))
+    ) as T;
+  const claudeTools = withoutClaudeHidden(tools);
+
+  const backendUrl = process.env.NEXT_PUBLIC_OVERRIDE_BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL;
+  // this runs before the backend listens: a bucket url that doesn't parse only
+  // costs the widget its thumbnails, never the boot
+  let storageOrigin: string | undefined;
+  try {
+    storageOrigin = new URL(UploadFactory.createStorage().publicUrl!('')).origin;
+  } catch (err) {}
+
+  // MCP Apps widgets (ui:// resources). They run in the host's sandboxed iframe,
+  // which can only reach the domains listed in the csp
+  const appResources = {
+    [UPLOAD_WIDGET_URI]: {
+      name: 'Upload Media',
+      description: 'Upload an image or video from the device to the media library',
+      html: uploadWidgetHtml(backendUrl!),
+      meta: {
+        csp: { connectDomains: [new URL(backendUrl!).origin] },
+        // the "Copy link" button of the uploaded media
+        permissions: { clipboardWrite: {} },
+        prefersBorder: true,
+      },
+    },
+    ...(UploadFactory.clippingEnabled()
+      ? {
+          [CLIPPING_WIDGET_URI]: {
+            name: 'Video Clipping',
+            description: 'Progress of a video clipping and the clips it made',
+            html: clippingWidgetHtml(backendUrl!),
+            meta: {
+              csp: {
+                connectDomains: [new URL(backendUrl!).origin],
+                // the thumbnails of the clips live wherever the storage serves files
+                ...(storageOrigin ? { resourceDomains: [storageOrigin] } : {}),
+              },
+              // the "Copy link" button of a clip
+              permissions: { clipboardWrite: {} },
+              prefersBorder: true,
+            },
+          },
+        }
+      : {}),
+  };
 
   const serverConfig = {
     name: 'Postiz MCP',
     version: '1.0.0',
     tools,
     agents: { postiz: agent },
+    appResources,
   };
 
   const server = new MCPServer(serverConfig);
@@ -73,27 +142,87 @@ export const startMcp = async (app: INestApplication) => {
     name: 'Postiz MCP',
     version: '1.0.0',
     tools,
+    appResources,
   });
+
+  // a widget of a hidden tool is hidden with it
+  const { [CLIPPING_WIDGET_URI]: hiddenWidget, ...claudeAppResources } = appResources as Record<string, (typeof appResources)[typeof UPLOAD_WIDGET_URI]>;
 
   const claudeOauthServer = new MCPServer({
     name: 'Postiz MCP',
     version: '1.0.0',
     tools: claudeTools,
+    appResources: claudeAppResources,
   });
 
-  const oauthResource = new URL('/mcp-oauth', process.env.NEXT_PUBLIC_BACKEND_URL!).toString();
+  // Self-hosted connections, built from the agent tools so the ui:// widgets
+  // (which upload to this server) are left out
+  let selfHostedServer: MCPServer | undefined;
+  let claudeSelfHostedServer: MCPServer | undefined;
+  if (selfHostedRelayEnabled()) {
+    const selfHostedTools = mcpRelayService.tools(agentTools);
+    selfHostedServer = new MCPServer({
+      name: 'Postiz MCP',
+      version: '1.0.0',
+      tools: selfHostedTools,
+    });
+    claudeSelfHostedServer = new MCPServer({
+      name: 'Postiz MCP',
+      version: '1.0.0',
+      tools: withoutClaudeHidden(selfHostedTools),
+    });
+  }
 
-  // Every OAuth-protected MCP path is its own RFC 9728 protected resource, but
-  // they all share the /mcp-oauth authorization server (the token endpoint
-  // ignores the RFC 8707 resource param, so one AS covers all of them)
-  const createResourceMiddleware = (mcpPath: string) =>
+  // Two RFC 8414 path-based issuers backed by the same endpoints and code.
+  // /mcp-oauth-chatgpt is what the ChatGPT app submission points at: it does
+  // not advertise a registration_endpoint, so the OpenAI builder defaults to
+  // the pre-defined client credentials instead of DCR (a fresh path, because
+  // OpenAI kept serving its cached copy of the old /mcp-oauth metadata).
+  // /mcp-oauth-dynamic keeps DCR for Claude, Cursor and every other
+  // self-registering client
+  const authorizationServers: Record<string, { issuer: string; registration: boolean }> = {
+    '/mcp-oauth-chatgpt': {
+      issuer: new URL('/mcp-oauth-chatgpt', process.env.NEXT_PUBLIC_BACKEND_URL!).toString(),
+      registration: false,
+    },
+    '/mcp-oauth-dynamic': {
+      issuer: new URL('/mcp-oauth-dynamic', process.env.NEXT_PUBLIC_BACKEND_URL!).toString(),
+      registration: true,
+    },
+  };
+
+  const authorizationServerMetadata = (server: { issuer: string; registration: boolean }) => ({
+    // RFC 8414: metadata served at /.well-known/oauth-authorization-server/<path>
+    // belongs to the path-based issuer <backend>/<path>
+    issuer: server.issuer,
+    authorization_endpoint: `${process.env.FRONTEND_URL}/oauth/authorize`,
+    token_endpoint: `${backendUrl}/oauth/token`,
+    ...(server.registration && {
+      registration_endpoint: `${backendUrl}/oauth/register`,
+    }),
+    ...(enableOidcEmailClaims && {
+      userinfo_endpoint: `${backendUrl}/oauth/userinfo`,
+    }),
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code'],
+    token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
+    code_challenge_methods_supported: ['S256'],
+    scopes_supported: oauthScopes,
+  });
+
+  // Every OAuth-protected MCP path is its own RFC 9728 protected resource
+  // (the token endpoint ignores the RFC 8707 resource param, so the issuers
+  // above cover all of them)
+  const createResourceMiddleware = (mcpPath: string, authorizationServer: string) =>
     createOAuthMiddleware({
       oauth: {
         resource: new URL(mcpPath, process.env.NEXT_PUBLIC_BACKEND_URL!).toString(),
-        authorizationServers: [oauthResource],
+        authorizationServers: [authorizationServers[authorizationServer].issuer],
         scopesSupported: oauthScopes,
         validateToken: async (token: string) => {
-          const org = await resolveAuth(token);
+          const org = token.startsWith('psh_')
+            ? await resolveSelfHosted(token)
+            : await resolveAuth(token);
           if (!org) {
             return { valid: false, error: 'invalid_token', errorDescription: 'Invalid API Key or OAuth token' };
           }
@@ -105,15 +234,21 @@ export const startMcp = async (app: INestApplication) => {
 
   const oauthResources: Record<
     string,
-    { middleware: ReturnType<typeof createOAuthMiddleware>; mcpServer: MCPServer }
+    {
+      middleware: ReturnType<typeof createOAuthMiddleware>;
+      mcpServer: MCPServer;
+      selfHostedServer?: MCPServer;
+    }
   > = {
-    // ChatGPT app submission
-    '/mcp-oauth': { middleware: createResourceMiddleware('/mcp-oauth'), mcpServer: oauthServer },
+    // ChatGPT app submission (pre-defined client credentials, no DCR)
+    '/mcp-oauth-chatgpt': { middleware: createResourceMiddleware('/mcp-oauth-chatgpt', '/mcp-oauth-chatgpt'), mcpServer: oauthServer, selfHostedServer },
+    // Former ChatGPT path, kept for connectors that were created against it
+    '/mcp-oauth': { middleware: createResourceMiddleware('/mcp-oauth', '/mcp-oauth-dynamic'), mcpServer: oauthServer, selfHostedServer },
     // Claude connector directory submission
-    '/mcp-oauth-claude': { middleware: createResourceMiddleware('/mcp-oauth-claude'), mcpServer: claudeOauthServer },
+    '/mcp-oauth-claude': { middleware: createResourceMiddleware('/mcp-oauth-claude', '/mcp-oauth-dynamic'), mcpServer: claudeOauthServer, selfHostedServer: claudeSelfHostedServer },
     // Clients that register themselves through DCR (/oauth/register) - not
     // directory-reviewed, so they get the full toolset (media generation included)
-    '/mcp-oauth-dynamic': { middleware: createResourceMiddleware('/mcp-oauth-dynamic'), mcpServer: oauthServer },
+    '/mcp-oauth-dynamic': { middleware: createResourceMiddleware('/mcp-oauth-dynamic', '/mcp-oauth-dynamic'), mcpServer: oauthServer, selfHostedServer },
   };
 
   if (process.env.OPENAI_APP_CHALLANGE) {
@@ -138,7 +273,8 @@ export const startMcp = async (app: INestApplication) => {
   });
 
   app.use('/.well-known/oauth-authorization-server', async (req: Request, res: Response, next: () => void) => {
-    if (req.path !== '/mcp-oauth') {
+    const server = authorizationServers[req.path];
+    if (!server) {
       next();
       return;
     }
@@ -153,26 +289,12 @@ export const startMcp = async (app: INestApplication) => {
     }
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Cache-Control', 'max-age=3600');
-    res.json({
-      // RFC 8414: metadata served at /.well-known/oauth-authorization-server/mcp-oauth
-      // belongs to the path-based issuer <backend>/mcp-oauth
-      issuer: oauthResource,
-      authorization_endpoint: `${process.env.FRONTEND_URL}/oauth/authorize`,
-      token_endpoint: `${process.env.NEXT_PUBLIC_OVERRIDE_BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL}/oauth/token`,
-      registration_endpoint: `${process.env.NEXT_PUBLIC_OVERRIDE_BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL}/oauth/register`,
-      ...(enableOidcEmailClaims && {
-        userinfo_endpoint: `${process.env.NEXT_PUBLIC_OVERRIDE_BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL}/oauth/userinfo`,
-      }),
-      response_types_supported: ['code'],
-      grant_types_supported: ['authorization_code'],
-      token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
-      code_challenge_methods_supported: ['S256'],
-      scopes_supported: oauthScopes,
-    });
+    res.json(authorizationServerMetadata(server));
   });
 
   app.use('/.well-known/openid-configuration', async (req: Request, res: Response, next: () => void) => {
-    if (req.path !== '/mcp-oauth' || !enableOidcEmailClaims) {
+    const server = authorizationServers[req.path];
+    if (!server || !enableOidcEmailClaims) {
       next();
       return;
     }
@@ -188,16 +310,7 @@ export const startMcp = async (app: INestApplication) => {
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Cache-Control', 'max-age=3600');
     res.json({
-      issuer: oauthResource,
-      authorization_endpoint: `${process.env.FRONTEND_URL}/oauth/authorize`,
-      token_endpoint: `${process.env.NEXT_PUBLIC_OVERRIDE_BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL}/oauth/token`,
-      registration_endpoint: `${process.env.NEXT_PUBLIC_OVERRIDE_BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL}/oauth/register`,
-      userinfo_endpoint: `${process.env.NEXT_PUBLIC_OVERRIDE_BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL}/oauth/userinfo`,
-      response_types_supported: ['code'],
-      grant_types_supported: ['authorization_code'],
-      token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
-      code_challenge_methods_supported: ['S256'],
-      scopes_supported: oauthScopes,
+      ...authorizationServerMetadata(server),
       subject_types_supported: ['public'],
       claims_supported: ['sub', 'email', 'email_verified'],
     });
@@ -211,22 +324,25 @@ export const startMcp = async (app: INestApplication) => {
     }
 
     // baseUrl is the mount path that matched, e.g. /mcp-oauth-claude
-    const { middleware, mcpServer } = oauthResources[req.baseUrl];
+    const { middleware, mcpServer, selfHostedServer } = oauthResources[req.baseUrl];
     const url = new URL(req.baseUrl, process.env.NEXT_PUBLIC_BACKEND_URL);
 
     const result = await middleware(req, res, url);
     if (!result.proceed) return;
 
     const token = result.tokenValidation?.subject;
-    const auth = await resolveAuth(token!);
-    if (!auth) {
+    // a self-hosted connection has no organization here
+    const selfHosted = token!.startsWith('psh_');
+    const relay = selfHosted ? await resolveSelfHosted(token!) : undefined;
+    const auth = selfHosted ? undefined : await resolveAuth(token!);
+    if (!auth && !(relay && selfHostedServer)) {
       res.status(401).json({ error: 'invalid_token', error_description: 'Could not resolve organization' });
       return;
     }
 
     fixAcceptHeader(req);
-    await runWithContext({ requestId: token!, auth }, async () => {
-      await mcpServer.startHTTP({
+    await runWithContext({ requestId: token!, auth, relay: relay || undefined }, async () => {
+      await (relay ? selfHostedServer! : mcpServer).startHTTP({
         url: url,
         httpPath: url.pathname,
         options: {

@@ -22,7 +22,7 @@ export class SaveMediaInformationDto {
   @IsOptional() @IsArray() @IsString({ each: true }) people?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) products?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) keywords?: string[];
-  @IsOptional() @IsIn(['draft', 'ready', 'archived']) status?: string;
+  @IsOptional() @IsIn(['draft', 'ready', 'archived']) libraryStatus?: string;
   @IsOptional() @IsNumber() @Min(0) @Max(1) focusX?: number | null;
   @IsOptional() @IsNumber() @Min(0) @Max(1) focusY?: number | null;
   @IsOptional() @IsArray() @IsString({ each: true }) recommendedPlatforms?: string[];

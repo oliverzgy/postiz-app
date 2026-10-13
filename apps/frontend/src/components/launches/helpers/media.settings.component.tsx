@@ -316,7 +316,7 @@ export const MediaComponentInner: FC<{
   );
   const [title, setTitle] = useState(media?.title || media?.originalName || '');
   const [description, setDescription] = useState(media?.description || '');
-  const [status, setStatus] = useState(media?.status || 'draft');
+  const [status, setStatus] = useState(media?.libraryStatus || 'draft');
   const [categoryId, setCategoryId] = useState(media?.categoryId || media?.category?.id || '');
   const [selectedTags, setSelectedTags] = useState<any[]>(
     (media?.tags || [])
@@ -376,7 +376,7 @@ export const MediaComponentInner: FC<{
           alt: altText,
           thumbnail: path,
           thumbnailTimestamp: thumbnailTimestamp,
-          title, description, status,
+          title, description, libraryStatus: status,
           categoryId: categoryId || null,
           tagIds: (tags?.tags || [])
             .filter((tag: any) => selectedTags.some((item: any) => item.value === tag.name || item.id === tag.id))

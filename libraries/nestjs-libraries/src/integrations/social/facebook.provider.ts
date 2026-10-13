@@ -6,7 +6,7 @@ import {
   PostResponse,
   SocialProvider,
 } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
-import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
+import { makeSecureId } from '@gitroom/nestjs-libraries/services/make.secure.id';
 import dayjs from 'dayjs';
 import {
   BadBody,
@@ -26,7 +26,7 @@ import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorato
 export const META_GRAPH_API_VERSION = 'v25.0';
 
 @Rules(
-  "Facebook posts can be text only, or include photos or a video. If it's a story, it must have at least one attachment (photo or video), and each media is published as a separate story."
+  "Facebook posts can be text only, or include photos or a video. If it's a story, it must have at least one attachment (photo or video), and each media is published as a separate story. Video posts (not stories) can carry an optional title."
 )
 export class FacebookProvider extends SocialAbstract implements SocialProvider {
   identifier = 'facebook';
@@ -64,7 +64,7 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
     status: number
   ):
     | {
-        type: 'refresh-token' | 'bad-body';
+        type: 'refresh-token' | 'bad-body' | 'retry';
         value: string;
       }
     | undefined {
@@ -83,6 +83,28 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       };
     }
 
+    // The token is valid but belongs to the user, not to the page - the page
+    // was never granted to the app, so only reconnecting can fix it
+    if (
+      body.indexOf(
+        'Unpublished posts must be posted to a page as the page itself'
+      ) > -1
+    ) {
+      return {
+        type: 'refresh-token' as const,
+        value:
+          'Postiz is not authorized to publish as this page, please reconnect the channel',
+      };
+    }
+
+    if (body.indexOf('(#200)') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value:
+          'Facebook rejected the post due to missing permissions. Make sure your Facebook account has full content access to the Page, then reconnect the channel.',
+      };
+    }
+
     if (body.indexOf('1366046') > -1) {
       return {
         type: 'bad-body' as const,
@@ -90,9 +112,11 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       };
     }
 
+    // code 368 "Temporarily blocked for policies violations" (subcode
+    // 1390008): Meta documents it as temporary, "wait and retry the operation"
     if (body.indexOf('1390008') > -1) {
       return {
-        type: 'bad-body' as const,
+        type: 'retry' as const,
         value: 'You are posting too fast, please slow down',
       };
     }
@@ -207,6 +231,43 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
         value: 'Facebook return: No permission to publish the video',
       };
     }
+    if (/"error_subcode":459\b/.test(body)) {
+      return {
+        type: 'bad-body' as const,
+        value:
+          'Facebook is asking you to resolve a security check. Log in at facebook.com, complete it, then try again',
+      };
+    }
+    if (/"error_subcode":492\b/.test(body)) {
+      return {
+        type: 'bad-body' as const,
+        value:
+          'Your Facebook user no longer has a role on this Page. Ask a Page admin to grant you a role, then reconnect the channel',
+      };
+    }
+    if (body.indexOf('must be granted before impersonating') > -1) {
+      return {
+        type: 'refresh-token' as const,
+        value:
+          'Facebook Page permissions are missing, please reconnect the channel and allow all permissions',
+      };
+    }
+    if (
+      /"error_subcode":33\b/.test(body) &&
+      body.indexOf('does not exist') > -1
+    ) {
+      return {
+        type: 'bad-body' as const,
+        value:
+          'The Facebook Page or post this was targeting no longer exists, please reconnect the channel and schedule again',
+      };
+    }
+    if (body.indexOf('Sorry, something went wrong') > -1) {
+      return {
+        type: 'retry' as const,
+        value: 'Facebook is temporarily unavailable, please try again later',
+      };
+    }
     if (body.indexOf('490') > -1) {
       return {
         type: 'refresh-token' as const,
@@ -238,7 +299,7 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
   }
 
   async generateAuthUrl() {
-    const state = makeId(6);
+    const state = makeSecureId(6);
     return {
       url:
         `https://www.facebook.com/${META_GRAPH_API_VERSION}/dialog/oauth` +
@@ -248,7 +309,7 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
         )}` +
         `&state=${state}` +
         `&scope=${this.scopes.join(',')}`,
-      codeVerifier: makeId(10),
+      codeVerifier: makeSecureId(10),
       state,
     };
   }
@@ -393,6 +454,7 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
   async fetchPageInformation(accessToken: string, data: { page: string }) {
     const pageId = data.page;
     const fields = 'id,username,name,access_token,picture.type(large)';
+    let foundWithoutToken = false;
 
     const searchPaginated = async (startUrl: string) => {
       let url: string | undefined = startUrl;
@@ -402,7 +464,11 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
           const page = response.data.find(
             (p: any) => String(p.id) === String(pageId)
           );
-          if (page) {
+          // A page listed through a business the user has no role on comes
+          // back without a page token, keep looking for a listing that has one
+          if (page && !page.access_token) {
+            foundWithoutToken = true;
+          } else if (page) {
             return {
               id: page.id,
               name: page.name,
@@ -456,6 +522,12 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       }
     } catch {
       // Business Manager API not available for all users
+    }
+
+    if (foundWithoutToken) {
+      throw new Error(
+        'Your Facebook user has no permission to manage this page. Ask a page admin for full content access, then reconnect the channel'
+      );
     }
 
     throw new Error('Page not found in your accounts');
@@ -775,6 +847,9 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
             body: JSON.stringify({
               file_url: firstPost?.media?.[0]?.path!,
               description: firstPost.message,
+              ...(firstPost?.settings?.title
+                ? { title: firstPost.settings.title }
+                : {}),
               published: true,
             }),
           },
@@ -963,11 +1038,17 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
     // require Graph API v23.0+:
     //   - page_total_media_view_unique: total unique views on the page's media (reach)
     //   - page_media_view: total media views, broken down between paid and organic
-    const { data } = await (
+    const { data, error } = await (
       await fetch(
         `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${id}/insights?metric=page_total_media_view_unique,page_media_view,page_post_engagements,page_daily_follows&access_token=${accessToken}&period=day&since=${since}&until=${until}`
       )
     ).json();
+
+    // Throw so checkAnalytics doesn't cache the empty result for an hour.
+    if (error) {
+      console.warn('Facebook page insights returned an error:', { id, error });
+      throw new Error(error.message);
+    }
 
     // page_media_view returns paid/organic breakdowns as an object; sum them to
     // keep the single-total UI working.
@@ -1007,6 +1088,19 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
     date: number
   ): Promise<AnalyticsData[]> {
     const today = dayjs().format('YYYY-MM-DD');
+
+    // The stored id (releaseId) shape depends on the post type set in post():
+    //   - feed post  -> `{pageid}_{postid}` (contains `_`), has an `insights` edge
+    //   - reel/video -> bare numeric video id, NO `insights` edge (only `video_insights`)
+    //   - story      -> bare story id, no usable insights via this path
+    // There is no separate stored type, so id shape is the discriminator. Calling
+    // `/{videoId}/insights` on a video/story node returns
+    // `(#100) Tried accessing nonexisting field (insights)`, which is what surfaced
+    // in prod as "Error fetching Facebook post analytics: ApplicationFailure". Route
+    // bare ids to the video-only edge instead.
+    if (!postId.includes('_')) {
+      return this.videoPostAnalytics(accessToken, postId, today);
+    }
 
     try {
       // Fetch post insights from Facebook Graph API.
@@ -1075,6 +1169,112 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       return result;
     } catch (err) {
       console.error('Error fetching Facebook post analytics:', err);
+      return [];
+    }
+  }
+
+  // Video/reel posts store a bare video id whose node has no `insights` edge; their
+  // analytics live on the `/{videoId}/video_insights` edge instead. Story posts also
+  // store a bare id but have no usable insights here — the video_insights call comes
+  // back with an `error` (or empty data), which we swallow to an empty result so a
+  // single story/video can't break the statistics page.
+  private async videoPostAnalytics(
+    accessToken: string,
+    videoId: string,
+    today: string
+  ): Promise<AnalyticsData[]> {
+    try {
+      // Metric names verified against the Graph API v23.0 video_insights docs:
+      //   - total_video_impressions: times the video was shown
+      //   - total_video_views: 3s+ (or full, if shorter) plays
+      //   - total_video_reactions_by_type_total: reactions object, keyed by type
+      // Reels never return the total_video_* metrics (the edge answers with an
+      // empty data array), only the reels ones, so both sets are requested at
+      // once and Graph simply omits the metrics that don't apply:
+      //   - fb_reels_total_plays: plays including replays
+      //   - post_video_likes_by_reaction_type: reactions object, keyed by type
+      //   - post_video_social_actions: comments/shares object, keyed by type
+      // Use plain fetch (not this.fetch) so a `(#100) nonexisting field` / story
+      // response doesn't throw an ApplicationFailure — we want a quiet `[]` instead.
+      const { data, error } = await (
+        await fetch(
+          `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${videoId}/video_insights?metric=total_video_impressions,total_video_views,total_video_reactions_by_type_total,fb_reels_total_plays,post_video_likes_by_reaction_type,post_video_social_actions&access_token=${accessToken}`
+        )
+      ).json();
+
+      // Stories (and videos without this edge) come back with an error / no data —
+      // return an empty result quietly rather than logging a scary error. But a
+      // `nonexisting field (video_insights)` is the only "expected" error here; any
+      // other error (bad metric name, token, permissions) means the fix is silently
+      // returning empty when it shouldn't be, so surface it as a warning (not a throw,
+      // not a scary error) so it's diagnosable without breaking the statistics page.
+      if (error || !data || data.length === 0) {
+        if (error && !/nonexisting field/i.test(error.message || '')) {
+          console.warn('Facebook video_insights returned an error:', {
+            videoId,
+            error,
+          });
+        }
+        return [];
+      }
+
+      const result: AnalyticsData[] = [];
+
+      for (const metric of data) {
+        const value = metric.values?.[0]?.value;
+        if (value === undefined) continue;
+
+        let label = '';
+        let total = '';
+
+        switch (metric.name) {
+          case 'total_video_impressions':
+            label = 'Impressions';
+            total = String(value);
+            break;
+          case 'total_video_views':
+            label = 'Views';
+            total = String(value);
+            break;
+          case 'fb_reels_total_plays':
+            label = 'Plays';
+            total = String(value);
+            break;
+          case 'total_video_reactions_by_type_total':
+          case 'post_video_likes_by_reaction_type':
+            // This returns an object with reaction types
+            if (typeof value === 'object') {
+              const totalReactions = Object.values(
+                value as Record<string, number>
+              ).reduce((sum: number, v: number) => sum + v, 0);
+              label = 'Reactions';
+              total = String(totalReactions);
+            }
+            break;
+          case 'post_video_social_actions':
+            // This returns an object with action types (comments, shares)
+            if (typeof value === 'object') {
+              const totalActions = Object.values(
+                value as Record<string, number>
+              ).reduce((sum: number, v: number) => sum + v, 0);
+              label = 'Engagement';
+              total = String(totalActions);
+            }
+            break;
+        }
+
+        if (label) {
+          result.push({
+            label,
+            percentageChange: 0,
+            data: [{ total, date: today }],
+          });
+        }
+      }
+
+      return result;
+    } catch (err) {
+      console.error('Error fetching Facebook video post analytics:', err);
       return [];
     }
   }

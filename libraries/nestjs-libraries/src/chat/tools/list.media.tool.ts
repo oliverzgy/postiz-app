@@ -48,7 +48,7 @@ const mapMedia = (media: any) => ({
   title: media.title ?? null,
   description: media.description ?? null,
   alt: media.alt ?? null,
-  status: media.status ?? null,
+  status: media.libraryStatus ?? null,
   type: media.type ?? null,
   mimeType: media.mimeType ?? null,
   fileSize: media.fileSize ?? null,
@@ -120,7 +120,7 @@ Use this before updateMediaMetadataTool to find the media id and see current tit
         status: z
           .enum(['draft', 'ready', 'archived'])
           .optional()
-          .describe('Filter by readiness status'),
+          .describe('Filter by editorial status (draft, ready, archived)'),
         categoryId: z.string().optional().describe('Filter by media category id'),
         type: z
           .string()
@@ -160,7 +160,7 @@ Use this before updateMediaMetadataTool to find the media id and see current tit
             inputData.page || 1,
             inputData.search,
             {
-              status: inputData.status,
+              libraryStatus: inputData.status,
               categoryId: inputData.categoryId,
               type: inputData.type,
               tagIds: inputData.tagIds,

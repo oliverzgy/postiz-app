@@ -133,7 +133,9 @@ Does not upload a new file and does not change contentHash. Returns the updated 
             ...(inputData.keywords !== undefined
               ? { keywords: inputData.keywords }
               : {}),
-            ...(inputData.status !== undefined ? { status: inputData.status } : {}),
+            ...(inputData.status !== undefined
+              ? { libraryStatus: inputData.status }
+              : {}),
             ...(inputData.focusX !== undefined ? { focusX: inputData.focusX } : {}),
             ...(inputData.focusY !== undefined ? { focusY: inputData.focusY } : {}),
             ...(inputData.recommendedPlatforms !== undefined
@@ -166,7 +168,7 @@ Does not upload a new file and does not change contentHash. Returns the updated 
           return {
             id: updated.id,
             title: updated.title ?? null,
-            status: updated.status ?? null,
+            status: updated.libraryStatus ?? null,
             categoryId: updated.categoryId ?? null,
             tagIds: (updated.tags || []).map((row: any) => row.tagId),
             keywords: updated.keywords || [],

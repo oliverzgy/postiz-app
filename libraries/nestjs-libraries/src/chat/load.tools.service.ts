@@ -6,6 +6,7 @@ import { pStore } from '@gitroom/nestjs-libraries/chat/mastra.store';
 import { array, object, string } from 'zod';
 import { ModuleRef } from '@nestjs/core';
 import { toolList } from '@gitroom/nestjs-libraries/chat/tools/tool.list';
+import { AgentToolInterface } from '@gitroom/nestjs-libraries/chat/agent.tool.interface';
 import dayjs from 'dayjs';
 
 export const AgentState = object({
@@ -21,11 +22,16 @@ const renderArray = (list: string[], show: boolean) => {
 export class LoadToolsService {
   constructor(private _moduleRef: ModuleRef) {}
 
-  async loadTools() {
+  async loadTools(mcpOnly = false) {
     return (
       await Promise.all<{ name: string; tool: any }>(
         toolList
-          .map((p) => this._moduleRef.get(p, { strict: false }))
+          .map(
+            (p) =>
+              this._moduleRef.get(p, { strict: false }) as AgentToolInterface
+          )
+          .filter((p) => !!p.mcpOnly === mcpOnly)
+          .filter((p) => !p.available || p.available())
           .map(async (p) => ({
             name: p.name as string,
             tool: await p.run(),
@@ -40,12 +46,23 @@ export class LoadToolsService {
     );
   }
 
+  // Tools every install has, whatever features it configured
+  coreToolNames() {
+    return toolList
+      .map(
+        (p) => this._moduleRef.get(p, { strict: false }) as AgentToolInterface
+      )
+      .filter((p) => !p.mcpOnly && !p.available)
+      .map((p) => p.name);
+  }
+
   async agent() {
     const tools = await this.loadTools();
     return new Agent({
       id: 'postiz',
       name: 'postiz',
-      description: 'Agent that helps schedule and list social media posts for users',
+      description:
+        'Agent that helps schedule and list social media posts for users',
       instructions: ({ requestContext }) => {
         const ui: string = requestContext.get('ui' as never);
         return `
@@ -82,6 +99,7 @@ export class LoadToolsService {
       - In every message I will send you the list of needed social medias (id and platform), if you already have the information use it, if not, use the integrationSchema tool to get it.
       - Make sure you always take the last information I give you about the socials, it might have changed.
       - Before scheduling a post, always make sure you ask the user confirmation by providing all the details of the post (text, images, videos, date, time, social media platform, account).
+      - To reuse media that was already uploaded, use mediaListTool (search by filename) and pass the returned path as the attachment, instead of asking the user for a URL or uploading it again.
       - To find or inspect existing posts, use postsListTool with a UTC start and end date - it returns every post scheduled in that window. To cover "all my upcoming posts", pass a wide window starting now.
       - To enrich Media Library metadata (title, description, keywords, tags, status, license, etc.), first find the item with listMediaTool (by id, search, or filters), resolve categoryId with listMediaCategoriesTool when needed, then call updateMediaMetadataTool with only the fields to change. Confirm editorial changes with the user when values are ambiguous.
       - Use analyzeMediaTechnicalTool to fill width/height/duration/mime/contentHash; it does not invent editorial copy.

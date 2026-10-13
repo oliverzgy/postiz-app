@@ -6,11 +6,12 @@ import {
   PostResponse,
   SocialProvider,
 } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
-import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
+import { makeSecureId } from '@gitroom/nestjs-libraries/services/make.secure.id';
 import { timer } from '@gitroom/helpers/utils/timer';
 import dayjs from 'dayjs';
 import {
   BadBody,
+  Disconnect,
   SocialAbstract,
   ValidityMedia,
 } from '@gitroom/nestjs-libraries/integrations/social.abstract';
@@ -103,7 +104,7 @@ export class InstagramProvider
     status: number
   ):
     | {
-        type: 'refresh-token' | 'bad-body' | 'retry';
+        type: 'refresh-token' | 'bad-body' | 'retry' | 'disconnect';
         value: string;
       }
     | undefined {
@@ -117,6 +118,13 @@ export class InstagramProvider
       return {
         type: 'bad-body' as const,
         value: "This account doesn't support Trial Reels",
+      };
+    }
+    if (body.indexOf('2207078') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value:
+          'Instagram Trial Reel publish limit reached for this account, please try again later or publish the post as a regular Reel',
       };
     }
 
@@ -308,6 +316,14 @@ export class InstagramProvider
       };
     }
 
+    if (body.indexOf('(#200)') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value:
+          'Facebook rejected the post due to missing permissions. Make sure your Facebook account has full content access to the Page linked to this Instagram account, then reconnect the channel.',
+      };
+    }
+
     if (body.indexOf('Not enough permissions to post') > -1) {
       return {
         type: 'bad-body' as const,
@@ -319,6 +335,20 @@ export class InstagramProvider
       return {
         type: 'bad-body' as const,
         value: 'Aspect ratio not supported, must be between 4:5 to 1.91:1',
+      };
+    }
+
+    // Meta put the account behind a checkpoint: the token is still valid, so a
+    // refresh cannot help and every post fails until the user logs in on
+    // Instagram and re-connects the channel.
+    if (
+      body.indexOf('You cannot access the app till you log in to') > -1 ||
+      body.indexOf('Session key is malformed') > -1
+    ) {
+      return {
+        type: 'disconnect' as const,
+        value:
+          'Instagram requires you to log in at instagram.com and follow its instructions before posting can resume. After that, please reconnect this channel.',
       };
     }
 
@@ -355,8 +385,17 @@ export class InstagramProvider
     if (body.indexOf('2207082') > -1) {
       return {
         type: 'retry' as const,
-        value: 'Could not upload your media',
-      }
+        value:
+          'Instagram could not process this video. If you attached audio to a video that has no sound track, set the original video volume to 0 and try again',
+      };
+    }
+
+    if (body.indexOf('2207085') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value:
+          'Instagram could not process the video, please check the video format, duration and resolution and try again',
+      };
     }
 
     if (body.indexOf('2207077') > -1) {
@@ -415,7 +454,7 @@ export class InstagramProvider
   }
 
   async generateAuthUrl() {
-    const state = makeId(6);
+    const state = makeSecureId(6);
     return {
       url:
         `https://www.facebook.com/${META_GRAPH_API_VERSION}/dialog/oauth` +
@@ -425,7 +464,7 @@ export class InstagramProvider
         )}` +
         `&state=${state}` +
         `&scope=${encodeURIComponent(this.scopes.join(','))}`,
-      codeVerifier: makeId(10),
+      codeVerifier: makeSecureId(10),
       state,
     };
   }
@@ -597,6 +636,12 @@ export class InstagramProvider
     };
   }
 
+  // Instagram rejects collaborator handles that carry a leading @ with
+  // error_subcode 2207018, and the tag input stores whatever the user typed.
+  private stripHandle(handle: string) {
+    return handle.replace(/^@+/, '');
+  }
+
   // Single, read-only status check of a media container - the polling loops
   // that used to live inside post() are now driven by the post workflow.
   private async igContainerStatus(
@@ -615,11 +660,20 @@ export class InstagramProvider
     ).json();
 
     if (status_code === 'ERROR' || status_code === 'EXPIRED') {
+      const handleError = this.handleErrors(status || '', 200);
+      if (handleError?.type === 'disconnect') {
+        throw new Disconnect(
+          this.identifier,
+          JSON.stringify({ status_code, status }),
+          '{}',
+          handleError?.value
+        );
+      }
       throw new BadBody(
         this.identifier,
         JSON.stringify({ status_code, status }),
         '{}',
-        status || 'Instagram could not process the media'
+        handleError?.value || status || 'Instagram could not process the media'
       );
     }
 
@@ -656,6 +710,16 @@ export class InstagramProvider
     const [accessToken] = token.split('___');
     const [firstPost] = postDetails;
     const isStory = firstPost.settings.post_type === 'story';
+    const collaborators =
+      firstPost?.settings?.collaborators?.length && !isStory
+        ? `&collaborators=${encodeURIComponent(
+            JSON.stringify(
+              firstPost?.settings?.collaborators.map((p) =>
+                this.stripHandle(p.label)
+              )
+            )
+          )}`
+        : ``;
     const isTrialReel = this.assetBoolean(firstPost.settings.is_trial_reel);
     const medias = await Promise.all(
       firstPost?.media?.map(async (m) => {
@@ -671,6 +735,10 @@ export class InstagramProvider
           ? firstPost?.media?.length === 1
             ? isStory
               ? `video_url=${m.path}&media_type=STORIES`
+              : m?.thumbnail
+              ? `video_url=${m.path}&media_type=REELS&cover_url=${encodeURIComponent(
+                  m.thumbnail
+                )}`
               : `video_url=${m.path}&media_type=REELS&thumb_offset=${
                   m?.thumbnailTimestamp || 0
                 }`
@@ -692,12 +760,10 @@ export class InstagramProvider
             )}`
           : ``;
 
-        const collaborators =
-          firstPost?.settings?.collaborators?.length && !isStory
-            ? `&collaborators=${JSON.stringify(
-                firstPost?.settings?.collaborators.map((p) => p.label)
-              )}`
-            : ``;
+        // collaborators are not allowed on carousel child items,
+        // they go on the carousel container instead
+        const itemCollaborators =
+          firstPost?.media?.length === 1 ? collaborators : ``;
 
         // audio_configuration is only supported for Reels (single video, not a story)
         // and only with Facebook Login (not Instagram Login / graph.instagram.com)
@@ -724,7 +790,7 @@ export class InstagramProvider
 
         const { id: photoId } = await (
           await this.fetch(
-            `https://${type}/${META_GRAPH_API_VERSION}/${id}/media?${mediaType}${isCarousel}${collaborators}${trialParams}${audioConfiguration}&access_token=${accessToken}${caption}`,
+            `https://${type}/${META_GRAPH_API_VERSION}/${id}/media?${mediaType}${isCarousel}${itemCollaborators}${trialParams}${audioConfiguration}&access_token=${accessToken}${caption}`,
             {
               method: 'POST',
             }
@@ -754,6 +820,13 @@ export class InstagramProvider
               : 'carousel',
           containers: medias,
           message: firstPost?.message || '',
+          ...(collaborators
+            ? {
+                collaborators: firstPost.settings.collaborators!.map((p) =>
+                  this.stripHandle(p.label)
+                ),
+              }
+            : {}),
         },
       },
     ];
@@ -767,6 +840,7 @@ export class InstagramProvider
       containers: string[];
       message?: string;
       carouselId?: string;
+      collaborators?: string[];
     },
     integration: Integration
   ): Promise<PendingCheckResponse> {
@@ -833,6 +907,7 @@ export class InstagramProvider
       containers: string[];
       message?: string;
       carouselId?: string;
+      collaborators?: string[];
     },
     integration: Integration
   ): Promise<PendingCheckResponse> {
@@ -889,7 +964,13 @@ export class InstagramProvider
             pendingData.message || ''
           )}&media_type=CAROUSEL&children=${encodeURIComponent(
             pendingData.containers.join(',')
-          )}&access_token=${accessToken}`,
+          )}${
+            pendingData.collaborators?.length
+              ? `&collaborators=${encodeURIComponent(
+                  JSON.stringify(pendingData.collaborators)
+                )}`
+              : ``
+          }&access_token=${accessToken}`,
           {
             method: 'POST',
           }

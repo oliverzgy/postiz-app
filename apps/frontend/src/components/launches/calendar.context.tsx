@@ -84,10 +84,11 @@ export const CalendarContext = createContext({
   setListState: (state: ListStateFilter) => {
     /** empty **/
   },
-  selectedChannelId: null as string | null,
-  setSelectedChannelId: (_id: string | null) => {
+  selectedChannels: null as string[] | null,
+  setSelectedChannels: (channels: string[] | null) => {
     /** empty **/
   },
+  currentHour: newDayjs().startOf('hour'),
 });
 
 function postBelongsToChannel(
@@ -99,6 +100,7 @@ function postBelongsToChannel(
 
 export interface Integrations {
   name: string;
+  originalName?: string;
   id: string;
   disabled?: boolean;
   inBetweenSteps: boolean;
@@ -148,6 +150,23 @@ function getDateRange(display: string, referenceDate?: string) {
   }
 }
 
+// The current time rounded down to the unit. It checks on every minute, so it
+// also catches up within a minute after the computer wakes up from sleep.
+export const useNow = (unit: 'minute' | 'hour' = 'minute') => {
+  const [now, setNow] = useState(() => newDayjs().startOf(unit).valueOf());
+  useEffect(() => {
+    let timeout: NodeJS.Timeout;
+    const tick = () => {
+      // same number = no re-render, so the hour clock only renders once an hour
+      setNow(newDayjs().startOf(unit).valueOf());
+      timeout = setTimeout(tick, 60000 - (Date.now() % 60000));
+    };
+    tick();
+    return () => clearTimeout(timeout);
+  }, [unit]);
+  return useMemo(() => newDayjs(now), [now]);
+};
+
 export const CalendarWeekProvider: FC<{
   children: ReactNode;
   integrations: Integrations[];
@@ -156,10 +175,16 @@ export const CalendarWeekProvider: FC<{
   const [internalData, setInternalData] = useState([] as any[]);
   const [trendings] = useState<string[]>([]);
   const searchParams = useSearchParams();
-  const [displaySaved, setDisplaySaved] = useCookie('calendar-display', 'week');
-  const [channelCookie, setChannelCookie] = useCookie('calendar-channel', '');
+  // A 7-column week doesn't fit a phone, so default small screens (tailwind `mobile`) to the day view
+  const [displaySaved, setDisplaySaved] = useCookie(
+    'calendar-display',
+    typeof window !== 'undefined' &&
+      window.matchMedia('(max-width: 1025px)').matches
+      ? 'day'
+      : 'week'
+  );
+  const [channelsCookie, setChannelsCookie] = useCookie('calendar-channels', '');
   const display = searchParams.get('display') || displaySaved;
-  const selectedChannelId = channelCookie || null;
 
   // List view state
   const [listPage, setListPage] = useState(0);
@@ -168,10 +193,6 @@ export const CalendarWeekProvider: FC<{
     setListStateRaw(next);
     setListPage(0);
   }, []);
-  const setSelectedChannelId = useCallback((id: string | null) => {
-    setChannelCookie(id || '');
-    setListPage(0);
-  }, [setChannelCookie]);
 
   // Initialize with current date range based on URL params or defaults
   const initStartDate = searchParams.get('startDate');
@@ -183,12 +204,48 @@ export const CalendarWeekProvider: FC<{
       ? { startDate: initStartDate, endDate: initEndDate }
       : getDateRange(display);
 
+  // null = every channel, [] = none; persisted so a reload keeps the filter
+  const selectedChannels = useMemo<string[] | null>(() => {
+    if (!channelsCookie) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(channelsCookie);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }, [channelsCookie]);
+  const setSelectedChannels = useCallback(
+    (next: string[] | null) => {
+      setChannelsCookie(next ? JSON.stringify(next) : '');
+      setListPage(0);
+    },
+    [setChannelsCookie]
+  );
+
   const [filters, setFilters] = useState({
     startDate: initialRange.startDate,
     endDate: initialRange.endDate,
     customer: initCustomer || null,
     display,
   });
+
+  // drop channels that were removed or belong to another customer
+  useEffect(() => {
+    if (!selectedChannels?.length || !integrations.length) {
+      return;
+    }
+    const available = new Set(
+      integrations
+        .filter((i) => !filters.customer || i.customer?.id === filters.customer)
+        .map((i) => i.id)
+    );
+    const kept = selectedChannels.filter((id) => available.has(id));
+    if (kept.length !== selectedChannels.length) {
+      setSelectedChannels(kept.length ? kept : null);
+    }
+  }, [integrations, filters.customer, selectedChannels, setSelectedChannels]);
 
   const params = useMemo(() => {
     return new URLSearchParams({
@@ -219,9 +276,9 @@ export const CalendarWeekProvider: FC<{
       limit: '100',
       customer: filters?.customer?.toString() || '',
       state: listState,
-      integration: selectedChannelId || '',
+      ...(selectedChannels ? { integrations: selectedChannels.join(',') } : {}),
     }).toString();
-  }, [listPage, filters.customer, listState, selectedChannelId]);
+  }, [listPage, filters.customer, listState, selectedChannels]);
 
   const loadListData = useCallback(async () => {
     const response = await fetch(`/posts/list?${listParams}`);
@@ -312,19 +369,21 @@ export const CalendarWeekProvider: FC<{
     []
   );
 
+  const filterByChannels = useCallback(
+    (list: any[]) =>
+      selectedChannels
+        ? list.filter((p) =>
+            selectedChannels.some((id) => postBelongsToChannel(p, id))
+          )
+        : list,
+    [selectedChannels]
+  );
+
   const posts = useMemo(() => calendarData?.posts || [], [calendarData?.posts]);
   const comments = useMemo(() => calendarData?.comments || [], [calendarData?.comments]);
 
   // List view data
-  const listPosts = useMemo(() => {
-    const all = listData?.posts || [];
-    if (!selectedChannelId) {
-      return all;
-    }
-    return all.filter((post: { integrationId?: string; integration?: { id?: string } }) =>
-      postBelongsToChannel(post, selectedChannelId)
-    );
-  }, [listData?.posts, selectedChannelId]);
+  const listPosts = useMemo(() => listData?.posts || [], [listData?.posts]);
   const listTotal = listData?.total || 0;
   const listTotalPages = Math.ceil(listTotal / 100);
 
@@ -351,30 +410,6 @@ export const CalendarWeekProvider: FC<{
     }
   }, [posts]);
 
-  useEffect(() => {
-    if (!selectedChannelId) {
-      return;
-    }
-    const match = integrations.find((item) => item.id === selectedChannelId);
-    if (!match) {
-      setSelectedChannelId(null);
-      return;
-    }
-    if (filters.customer && match.customer?.id !== filters.customer) {
-      setSelectedChannelId(null);
-    }
-  }, [integrations, selectedChannelId, filters.customer, setSelectedChannelId]);
-
-  const visiblePosts = useMemo(() => {
-    const all = calendarIsLoading ? [] : internalData;
-    if (!selectedChannelId) {
-      return all;
-    }
-    return all.filter((post: { integrationId?: string; integration?: { id?: string } }) =>
-      postBelongsToChannel(post, selectedChannelId)
-    );
-  }, [calendarIsLoading, internalData, selectedChannelId]);
-
   // Combined reload function that handles both calendar and list views
   const reloadCalendarView = useCallback(() => {
     mutateCalendar();
@@ -384,13 +419,16 @@ export const CalendarWeekProvider: FC<{
   // Determine loading state based on current view
   const loading = filters.display === 'list' ? listIsLoading : calendarIsLoading;
 
+  // one clock for every calendar cell, instead of a timer per cell
+  const currentHour = useNow('hour');
+
   return (
     <CalendarContext.Provider
       value={{
         trendings,
         reloadCalendarView,
         ...filters,
-        posts: visiblePosts,
+        posts: calendarIsLoading ? [] : filterByChannels(internalData),
         loading,
         integrations,
         setFilters: setFiltersWrapper,
@@ -405,8 +443,9 @@ export const CalendarWeekProvider: FC<{
         setListPage,
         listState,
         setListState,
-        selectedChannelId,
-        setSelectedChannelId,
+        selectedChannels,
+        setSelectedChannels,
+        currentHour,
       }}
     >
       {children}

@@ -361,7 +361,8 @@ export class PostActivity {
           true,
           false,
           !/<\/?[a-z][\s\S]*>/i.test(p.content),
-          getIntegration.mentionFormat
+          getIntegration.mentionFormat,
+          !!getIntegration.inlineImages?.(JSON.parse(p.settings || '{}'))
         ),
         settings: JSON.parse(p.settings || '{}'),
         media: await this._postService.updateMedia(
@@ -394,11 +395,12 @@ export class PostActivity {
     try {
       await this._temporalService.client
         .getRawClient()
-        .workflow.start('streakWorkflow', {
+        .workflow.start('streakWorkflowV2', {
           args: [{ organizationId: integration.organizationId }],
           workflowId: `streak_${integration.organizationId}`,
           taskQueue: 'main',
-          workflowIdConflictPolicy: 'TERMINATE_EXISTING',
+          // Keep a running streak, it checks for newer posts before it ends
+          workflowIdConflictPolicy: 'USE_EXISTING',
           typedSearchAttributes: new TypedSearchAttributes([
             {
               key: organizationId,
@@ -498,7 +500,10 @@ export class PostActivity {
         return;
       }
 
-      const post = await this._postService.getPostByForWebhookId(postId);
+      const post = await this._postService.getPostByForWebhookId(
+        postId,
+        integrationId
+      );
       await Promise.all(
         webhooks.map(async (webhook) => {
           try {
@@ -569,7 +574,10 @@ export class PostActivity {
 
       return refresh;
     } catch (err) {
-      await this._refreshIntegrationService.setBetweenSteps(integration);
+      await this._refreshIntegrationService.setBetweenSteps(
+        integration,
+        (err as Error)?.message || ''
+      );
       return false;
     }
   }
@@ -598,7 +606,10 @@ export class PostActivity {
 
       return refresh;
     } catch (err) {
-      await this._refreshIntegrationService.setBetweenSteps(integration, cause);
+      await this._refreshIntegrationService.setBetweenSteps(
+        integration,
+        cause || (err as Error)?.message || ''
+      );
       return false;
     }
   }

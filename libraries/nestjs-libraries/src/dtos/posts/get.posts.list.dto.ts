@@ -5,6 +5,7 @@ import {
   Min,
   Max,
   IsIn,
+  IsArray,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
 
@@ -29,8 +30,10 @@ export class GetPostsListDto {
   customer?: string;
 
   @IsOptional()
-  @IsString()
-  integration?: string;
+  @IsArray()
+  @IsString({ each: true })
+  @Transform(({ value }) => (value ? value.split(',') : []))
+  integrations?: string[];
 
   @IsOptional()
   @IsIn(['all', 'scheduled', 'draft', 'published'])

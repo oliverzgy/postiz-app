@@ -29,6 +29,7 @@ export class MediaRepository {
         thumbnail: true,
         alt: true,
         status: true,
+        libraryStatus: true,
         title: true,
         contentHash: true,
       },
@@ -63,8 +64,55 @@ export class MediaRepository {
         thumbnail: true,
         alt: true,
         status: true,
+        libraryStatus: true,
         contentHash: true,
         title: true,
+      },
+    });
+  }
+
+  startProcessing(org: string, id: string) {
+    return this._media.model.media.update({
+      where: { id, organizationId: org },
+      data: { status: 'processing', processingError: null },
+      select: { id: true, status: true },
+    });
+  }
+
+  finishProcessing(
+    org: string,
+    id: string,
+    data: { name?: string; path?: string; fileSize?: number; error?: string }
+  ) {
+    return this._media.model.media.update({
+      where: { id, organizationId: org },
+      data: {
+        ...(data.name ? { name: data.name } : {}),
+        ...(data.path ? { path: data.path } : {}),
+        ...(data.fileSize ? { fileSize: data.fileSize } : {}),
+        status: data.error ? 'failed' : 'ready',
+        processingError: data.error || null,
+      },
+      select: { id: true, status: true },
+    });
+  }
+
+  getMediaStatus(org: string, id: string) {
+    return this._media.model.media.findFirst({
+      where: {
+        id,
+        organizationId: org,
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        name: true,
+        originalName: true,
+        path: true,
+        thumbnail: true,
+        alt: true,
+        status: true,
+        processingError: true,
       },
     });
   }
@@ -101,7 +149,7 @@ export class MediaRepository {
       people: data.people,
       products: data.products,
       keywords: data.keywords,
-      status: data.status,
+      libraryStatus: data.libraryStatus,
       focusX: data.focusX,
       focusY: data.focusY,
       recommendedPlatforms: data.recommendedPlatforms,
@@ -145,7 +193,7 @@ export class MediaRepository {
     const tagIds = typeof filters.tagIds === 'string' ? filters.tagIds.split(',').filter(Boolean) : filters.tagIds;
     const list = (value: string | string[] | undefined) => typeof value === 'string' ? value.split(',').filter(Boolean) : value;
     const categoryId = filters.categoryId;
-    const status = filters.status;
+    const libraryStatus = filters.libraryStatus;
     const type = filters.type;
     const platform = filters.platform;
     const language = filters.language;
@@ -154,7 +202,7 @@ export class MediaRepository {
     const expiryFilter = rights === 'expired' ? { expiresAt: { lt: new Date() } } : rights === 'expiring' ? { expiresAt: { gte: new Date(), lte: new Date(Date.now() + 30 * 86400000) } } : rights === 'incomplete' ? { OR: [{ licenseType: 'unknown' }, { source: null }, { copyrightOwner: null }] } : {};
     const filter = {
       ...(categoryId ? { categoryId: String(categoryId) } : {}),
-      ...(status ? { status: String(status) } : {}),
+      ...(libraryStatus ? { libraryStatus: String(libraryStatus) } : {}),
       ...(type ? { type: String(type) } : {}),
       ...(licenseType ? { licenseType: String(licenseType) } : {}),
       ...(tagIds?.length ? { tags: { some: { tagId: { in: tagIds } } } } : {}),
@@ -173,6 +221,7 @@ export class MediaRepository {
           id: org,
         },
         deletedAt: null,
+        status: { not: 'processing' },
         ...combinedFilter,
       },
     };
@@ -181,6 +230,8 @@ export class MediaRepository {
       where: {
         organizationId: org,
         deletedAt: null,
+        // still being normalized: it shows up once the workflow releases it
+        status: { not: 'processing' },
         ...combinedFilter,
       },
       orderBy: {
@@ -195,7 +246,7 @@ export class MediaRepository {
         alt: true,
         thumbnailTimestamp: true,
         title: true, description: true, mimeType: true, fileSize: true, type: true,
-        width: true, height: true, durationMs: true, dominantColor: true, status: true,
+        width: true, height: true, durationMs: true, dominantColor: true, status: true, libraryStatus: true,
         people: true, products: true, keywords: true, focusX: true, focusY: true,
         recommendedPlatforms: true, languages: true, source: true, sourceUrl: true,
         attribution: true, copyrightOwner: true, licenseType: true, licenseUrl: true, expiresAt: true,

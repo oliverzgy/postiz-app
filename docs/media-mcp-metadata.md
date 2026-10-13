@@ -30,7 +30,7 @@ Aligned with `SaveMediaInformationDto` / Media settings UI:
 
 - Editorial: `title`, `description`, `alt`, `keywords`, `people`, `products`
 - Taxonomy: `categoryId` (or `null` to clear), `tagIds` (replaces assignments)
-- Status: `draft` \| `ready` \| `archived`
+- Status: `draft` \| `ready` \| `archived` — stored in `Media.libraryStatus`. Since upstream 2.24, `Media.status` belongs to upload processing (`processing` \| `ready` \| `failed`); the MCP tools keep the `status` name for the editorial value. Migration `20261013000000_media_library_status_split` moves pre-2.25 data and must run **before** the first 2.25 container starts (its `prisma db push` drops the old index the migration keys on).
 - Rights: `source`, `sourceUrl`, `attribution`, `copyrightOwner`, `licenseType`, `licenseUrl`, `expiresAt`
 - Placement: `recommendedPlatforms`, `languages`, `focusX` / `focusY`
 - Thumbnail: `thumbnail`, `thumbnailTimestamp`
