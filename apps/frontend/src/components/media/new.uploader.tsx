@@ -100,6 +100,10 @@ export function useUppyUploader(props: {
           if (type === 'video/mp4' && transloadit && transloadit.length > 0) {
             return ['video/mp4', 'video/mpeg', 'video/quicktime'];
           }
+          // GiggleFone stores .mov as uploaded when no normalizer is configured
+          if (type === 'video/mp4') {
+            return ['video/mp4', 'video/quicktime'];
+          }
           return [type];
         });
 

@@ -15,6 +15,7 @@ export const UPLOAD_ALLOWED_MIME = new Set<string>([
   'image/bmp',
   'image/tiff',
   'video/mp4',
+  'video/quicktime',
 ]);
 
 export function getMaxSize(mimeType: string): number {
