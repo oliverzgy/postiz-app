@@ -46,13 +46,14 @@ export class LoadToolsService {
     );
   }
 
-  // Tools every install has, whatever features it configured
+  // Tools a self-hosted instance must have to connect through the relay
+  // (every install has them, whatever features it configured)
   coreToolNames() {
     return toolList
       .map(
         (p) => this._moduleRef.get(p, { strict: false }) as AgentToolInterface
       )
-      .filter((p) => !p.mcpOnly && !p.available)
+      .filter((p) => !p.mcpOnly && !p.available && !p.optionalOnSelfHosted)
       .map((p) => p.name);
   }
 

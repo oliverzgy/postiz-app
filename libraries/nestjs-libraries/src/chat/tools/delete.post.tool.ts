@@ -31,6 +31,7 @@ const toolError = (err: unknown) => {
 export class DeletePostTool implements AgentToolInterface {
   constructor(private _postsService: PostsService) {}
   name = 'deletePostTool';
+  optionalOnSelfHosted = true;
 
   run() {
     return createTool({
