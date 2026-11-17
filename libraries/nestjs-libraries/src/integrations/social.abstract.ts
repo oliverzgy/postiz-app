@@ -39,6 +39,7 @@ export const stripQuery = (url: string) => {
 export type ValidityMedia = {
   path: string;
   thumbnail?: string;
+  alt?: string;
 };
 
 // Temporal serializes the whole ApplicationFailure (message + details) into the
@@ -553,6 +554,15 @@ export abstract class SocialAbstract {
     try {
       value = await func();
     } catch (err) {
+      // Already classified by the provider (e.g. mediaSize/mediaChunk): keep
+      // its message instead of re-wrapping it as 'Unknown Error'.
+      if (
+        err instanceof BadBody ||
+        err instanceof RefreshToken ||
+        err instanceof Disconnect
+      ) {
+        throw err;
+      }
       const handle = this.handleErrors(safeStringify(err), 200);
       value = { err: true, value: 'Unknown Error', ...(handle || {}) };
       globalErr = err;
