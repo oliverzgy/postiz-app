@@ -63,6 +63,19 @@ export class YoutubeTagsSettings {
   label: string;
 }
 
+export class YoutubeLocalizationDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(100)
+  @IsDefined()
+  title: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(5000)
+  description?: string;
+}
+
 export class YoutubeSettingsDto {
   @IsString()
   @MinLength(2)
@@ -89,4 +102,13 @@ export class YoutubeSettingsDto {
   @IsYoutubeTagsLength()
   @Type(() => YoutubeTagsSettings)
   tags: YoutubeTagsSettings[];
+
+  @IsString()
+  @IsOptional()
+  defaultLanguage?: string;
+
+  @IsOptional()
+  @ValidateNested({ each: true })
+  @Type(() => YoutubeLocalizationDto)
+  localizations?: Record<string, YoutubeLocalizationDto>;
 }

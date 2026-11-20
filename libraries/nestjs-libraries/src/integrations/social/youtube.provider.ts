@@ -599,8 +599,40 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
     // Start a resumable upload session: nothing exists on the channel until
     // the final byte is received, so nothing here is irreversible yet - the
     // bytes themselves are streamed by finalizePost, outside this activity.
+    const hasLocalizations =
+      !!settings?.localizations &&
+      typeof settings.localizations === 'object' &&
+      Object.keys(settings.localizations).length > 0;
+
+    const localizations = hasLocalizations
+      ? Object.entries(settings.localizations!).reduce<
+          Record<string, { title: string; description?: string }>
+        >((acc, [lang, loc]) => {
+          if (loc?.title) {
+            acc[lang] = {
+              title: loc.title,
+              description: loc.description || '',
+            };
+          }
+          return acc;
+        }, {})
+      : undefined;
+
+    const validLocalizations =
+      localizations && Object.keys(localizations).length > 0
+        ? localizations
+        : undefined;
+
+    const defaultLanguage =
+      settings?.defaultLanguage || (validLocalizations ? 'zh-HK' : undefined);
+
+    const parts = ['id', 'snippet', 'status'];
+    if (validLocalizations) {
+      parts.push('localizations');
+    }
+
     const session = await this.fetch(
-      'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=id,snippet,status&notifySubscribers=true',
+      `https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=${parts.join(',')}&notifySubscribers=true`,
       {
         method: 'POST',
         headers: {
@@ -613,6 +645,7 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
           snippet: {
             title: settings.title,
             description: firstPost?.message,
+            ...(defaultLanguage ? { defaultLanguage } : {}),
             ...(settings?.tags?.length
               ? { tags: settings.tags.map((p) => p.label) }
               : {}),
@@ -621,6 +654,7 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
             privacyStatus: settings.type,
             selfDeclaredMadeForKids: settings.selfDeclaredMadeForKids === 'yes',
           },
+          ...(validLocalizations ? { localizations: validLocalizations } : {}),
         }),
       }
     );
