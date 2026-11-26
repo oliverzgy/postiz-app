@@ -69,6 +69,7 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
   scopes = ['openid', 'profile', 'w_member_social'];
   override maxConcurrentJob = 8; // LinkedIn limits are daily budgets
   refreshWait = true;
+  refreshRepeat = true;
   editor = 'normal' as const;
   dto = LinkedinDto;
   maxLength() {

@@ -28,13 +28,15 @@ import { Provider } from '@prisma/client';
 import { makeSecureId } from '@gitroom/nestjs-libraries/services/make.secure.id';
 import * as Sentry from '@sentry/nestjs';
 import { FarcasterProvider } from '@gitroom/nestjs-libraries/integrations/social/farcaster.provider';
+import { AttributionService } from '@gitroom/nestjs-libraries/services/attribution/attribution.service';
 
 @ApiTags('Auth')
 @Controller('/auth')
 export class AuthController {
   constructor(
     private _authService: AuthService,
-    private _emailService: EmailService
+    private _emailService: EmailService,
+    private _attributionService: AttributionService
   ) {}
 
   @Get('/can-register')
@@ -45,6 +47,14 @@ export class AuthController {
         Provider.LOCAL as string,
         invite || false
       ),
+    };
+  }
+
+  // URL parameters the app keeps until sign-up for the attribution tools
+  @Get('/attribution')
+  attribution() {
+    return {
+      params: this._attributionService.queryParams(),
     };
   }
 

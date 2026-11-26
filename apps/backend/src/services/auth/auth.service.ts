@@ -10,6 +10,7 @@ import dayjs from 'dayjs';
 import { ForgotReturnPasswordDto } from '@gitroom/nestjs-libraries/dtos/auth/forgot-return.password.dto';
 import { EmailService } from '@gitroom/nestjs-libraries/services/email.service';
 import { NewsletterService } from '@gitroom/nestjs-libraries/newsletter/newsletter.service';
+import { AttributionService } from '@gitroom/nestjs-libraries/services/attribution/attribution.service';
 
 @Injectable()
 export class AuthService {
@@ -17,7 +18,8 @@ export class AuthService {
     private _userService: UsersService,
     private _organizationService: OrganizationService,
     private _emailService: EmailService,
-    private _providerManager: AuthProviderManager
+    private _providerManager: AuthProviderManager,
+    private _attributionService: AttributionService
   ) {}
   async canRegister(
     provider: string,
@@ -76,6 +78,10 @@ export class AuthService {
                 ip,
                 userAgent
               );
+
+        this._attributionService
+          .lead(create.users[0].user, body.attribution)
+          .catch((err) => {});
 
         const addedOrg =
           addToOrg && typeof addToOrg !== 'boolean'
@@ -222,6 +228,10 @@ export class AuthService {
     this._track('register', providerUser.email, body.datafast_visitor_id).catch(
       (err) => {}
     );
+
+    this._attributionService
+      .lead(create.users[0].user, body.attribution)
+      .catch((err) => {});
 
     await NewsletterService.register(providerUser.email);
 

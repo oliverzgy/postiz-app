@@ -50,6 +50,9 @@ export class InstagramStandaloneProvider
     if (!firstPost?.length) {
       return 'Should have at least one media';
     }
+    if (firstPost.length > 20) {
+      return 'Instagram carousel only supports up to 20 media attachments';
+    }
     if (this.assetBoolean(settings?.is_trial_reel)) {
       if ((firstPost?.length ?? 0) > 1) {
         return 'Trial Reels can only have one video';
@@ -174,7 +177,18 @@ export class InstagramStandaloneProvider
       )
     ).json();
 
-    this.checkScopes(this.scopes, getAccessToken.permissions);
+    try {
+      this.checkScopes(this.scopes, getAccessToken.permissions);
+    } catch (err) {
+      console.error(
+        'Instagram standalone scope check failed:',
+        JSON.stringify({
+          user_id: getAccessToken.user_id,
+          permissions: getAccessToken.permissions,
+        })
+      );
+      throw err;
+    }
 
     const { user_id, name, username, profile_picture_url } = await (
       await fetch(

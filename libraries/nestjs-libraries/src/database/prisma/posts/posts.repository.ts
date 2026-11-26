@@ -4,6 +4,7 @@ import { Post as PostBody } from '@gitroom/nestjs-libraries/dtos/posts/create.po
 import {
   APPROVED_SUBMIT_FOR_ORDER,
   CreationMethod,
+  Integration,
   Post,
   State,
 } from '@prisma/client';
@@ -16,6 +17,10 @@ import isSameOrAfter from 'dayjs/plugin/isSameOrAfter';
 import utc from 'dayjs/plugin/utc';
 import { v4 as uuidv4 } from 'uuid';
 import { CreateTagDto } from '@gitroom/nestjs-libraries/dtos/posts/create.tag.dto';
+import {
+  EncryptionService,
+  integrationEncryptedFields,
+} from '@gitroom/nestjs-libraries/services/encryption.service';
 
 dayjs.extend(isoWeek);
 dayjs.extend(weekOfYear);
@@ -30,8 +35,26 @@ export class PostsRepository {
     private _comments: PrismaRepository<'comments'>,
     private _tags: PrismaRepository<'tags'>,
     private _tagsPosts: PrismaRepository<'tagsPosts'>,
-    private _errors: PrismaRepository<'errors'>
+    private _errors: PrismaRepository<'errors'>,
+    private _encryptionService: EncryptionService
   ) {}
+
+  // A post that was loaded with its whole channel carries the tokens of the
+  // channel the way they are stored, so they are decrypted like in the
+  // integration repository
+  private async decryptIntegration<T extends { integration?: Integration | null }>(
+    post: T | null
+  ) {
+    return post?.integration
+      ? {
+          ...post,
+          integration: await this._encryptionService.decryptFields(
+            post.integration,
+            integrationEncryptedFields
+          ),
+        }
+      : post;
+  }
 
   searchForMissingThreeHoursPosts() {
     return this._post.model.post.findMany({
@@ -59,6 +82,18 @@ export class PostsRepository {
           },
         },
         publishDate: true,
+      },
+    });
+  }
+
+  getPostState(id: string) {
+    return this._post.model.post.findUnique({
+      where: {
+        id,
+        deletedAt: null,
+      },
+      select: {
+        state: true,
       },
     });
   }
@@ -394,8 +429,8 @@ export class PostsRepository {
     });
   }
 
-  getPostsByGroup(orgId: string, group: string) {
-    return this._post.model.post.findMany({
+  async getPostsByGroup(orgId: string, group: string) {
+    const posts = await this._post.model.post.findMany({
       where: {
         group,
         ...(orgId ? { organizationId: orgId } : {}),
@@ -415,6 +450,8 @@ export class PostsRepository {
         },
       },
     });
+
+    return Promise.all(posts.map((p) => this.decryptIntegration(p)));
   }
 
   // the posts of the other channels in the batch, without the given group
@@ -437,13 +474,13 @@ export class PostsRepository {
     });
   }
 
-  getPost(
+  async getPost(
     id: string,
     includeIntegration = false,
     orgId?: string,
     isFirst?: boolean
   ) {
-    return this._post.model.post.findUnique({
+    const post = await this._post.model.post.findUnique({
       where: {
         id,
         ...(orgId ? { organizationId: orgId } : {}),
@@ -468,6 +505,8 @@ export class PostsRepository {
         childrenPost: true,
       },
     });
+
+    return this.decryptIntegration(post);
   }
 
   updatePost(id: string, postId: string, releaseURL: string) {
@@ -628,6 +667,19 @@ export class PostsRepository {
     });
   }
 
+  countPostsOfOtherOrganizations(orgId: string, ids: string[]) {
+    return this._post.model.post.count({
+      where: {
+        organizationId: {
+          not: orgId,
+        },
+        id: {
+          in: ids,
+        },
+      },
+    });
+  }
+
   async createOrUpdatePost(
     state: 'draft' | 'schedule' | 'now' | 'update',
     orgId: string,
@@ -781,6 +833,7 @@ export class PostsRepository {
       ? (
           await this._post.model.post.findFirst({
             where: {
+              organizationId: orgId,
               group: body.group,
               deletedAt: null,
               parentPostId: null,
@@ -795,6 +848,7 @@ export class PostsRepository {
     if (body.group && !keepGroup) {
       await this._post.model.post.updateMany({
         where: {
+          organizationId: orgId,
           group: body.group,
           deletedAt: null,
         },
@@ -810,6 +864,7 @@ export class PostsRepository {
     if (body.group && keepGroup) {
       await this._post.model.post.updateMany({
         where: {
+          organizationId: orgId,
           group: body.group,
           deletedAt: null,
           id: {
@@ -859,8 +914,8 @@ export class PostsRepository {
     });
   }
 
-  getPostById(id: string, org?: string) {
-    return this._post.model.post.findUnique({
+  async getPostById(id: string, org?: string) {
+    const post = await this._post.model.post.findUnique({
       where: {
         id,
         ...(org ? { organizationId: org } : {}),
@@ -885,6 +940,8 @@ export class PostsRepository {
         },
       },
     });
+
+    return this.decryptIntegration(post);
   }
 
   private get postTimelineSelect() {
